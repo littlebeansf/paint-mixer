@@ -1443,7 +1443,10 @@ function openCompareModal(items) {
     </div>
     <div class="compare-model-selector">
       <span class="compare-model-label">Model:</span>
-      ${['car','motorbike','helmet','sphere'].map(m=>`<button class="cmp-model-btn${m==='car'?' active':''}" data-model="${m}">${m.charAt(0).toUpperCase()+m.slice(1)}</button>`).join('')}
+      ${['car','torusknot','roundbox','helmet','sphere'].map(m=>{
+        const labels={car:'Car',torusknot:'Knot',roundbox:'Box',helmet:'Helmet',sphere:'Sphere'};
+        return `<button class="cmp-model-btn${m==='car'?' active':''}" data-model="${m}">${labels[m]||m}</button>`;
+      }).join('')}
     </div>
     <div class="compare-grid" id="compare-renderers"></div>
   `;
@@ -1541,7 +1544,8 @@ function _renderCompareSingle(canvas, item, modelType) {
   } else { tCtx.fillStyle=item.hex; tCtx.fillRect(0,0,1024,1024); }
   const tex=new THREE.CanvasTexture(tc);
   tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.RepeatWrapping;
-  tex.repeat.set(modelType==='sphere'?1:2,modelType==='sphere'?1:2);
+  const isPrim = ['sphere','torusknot','roundbox'].includes(modelType);
+  tex.repeat.set(isPrim?1:2, isPrim?1:2);
 
   const mp=EFFECT_3D_MATS[item.effectId]||EFFECT_3D_MATS['none'];
   const mat=new THREE.MeshPhysicalMaterial({
@@ -1572,10 +1576,26 @@ function _renderCompareSingle(canvas, item, modelType) {
 
   if(modelType==='sphere') {
     const geo=new THREE.SphereGeometry(1,64,64);
-    const mesh=new THREE.Mesh(geo,mat);
-    mesh.position.y=0.9;
-    addAndRender(mesh);
-    return;
+    const mesh=new THREE.Mesh(geo,mat); mesh.position.y=0.9;
+    addAndRender(mesh); return;
+  }
+  if(modelType==='torusknot') {
+    const geo=new THREE.TorusKnotGeometry(0.8,0.28,256,48,2,3);
+    const mesh=new THREE.Mesh(geo,mat); mesh.position.y=1.0;
+    addAndRender(mesh); return;
+  }
+  if(modelType==='roundbox') {
+    const geo=new THREE.BoxGeometry(1.5,1.5,1.5,64,64,64);
+    const pos=geo.attributes.position;
+    for(let i=0;i<pos.count;i++){
+      const v=new THREE.Vector3(pos.getX(i),pos.getY(i),pos.getZ(i));
+      const len=v.length(); const bevel=0.72;
+      v.multiplyScalar((1-bevel)+bevel*(0.75/len));
+      pos.setXYZ(i,v.x,v.y,v.z);
+    }
+    geo.computeVertexNormals();
+    const mesh=new THREE.Mesh(geo,mat); mesh.position.y=0.9;
+    addAndRender(mesh); return;
   }
 
   const src2=MODEL_SOURCES[modelType]||{};
@@ -1607,8 +1627,7 @@ function _renderCompareSingle(canvas, item, modelType) {
 }
 
 function _buildCompareProceduralModel(type, mat) {
-  if(type==='car') return _buildProceduralCar(mat);
-  if(type==='motorbike') return _buildProceduralMotorbike(mat);
+  if(type==='car')    return _buildProceduralCar(mat);
   if(type==='helmet') return _buildProceduralHelmet(mat);
   return new THREE.Group();
 }
@@ -2028,29 +2047,33 @@ let currentModel='car', currentEnv='studio';
 
 // Per-model camera config: [rotX, rotY, distance, camY, lookAtY]
 const MODEL_CAM = {
-  car:       [0.18, 0.5,  4.2, 0.6, 0.15],
-  motorbike: [0.10, -0.65, 4.8, 0.65, 0.55],  // sportbike: 3/4 front-left view
-  helmet:    [0.18, 0.5,  4.0, 0.5, 0.15],
-  sphere:    [0.15, 0.5,  4.5, 0.9, 0.9],
+  car:        [0.18, 0.5,  4.2, 0.6,  0.15],
+  torusknot:  [0.20, 0.5,  4.0, 0.7,  0.8],
+  roundbox:   [0.22, 0.5,  4.2, 0.7,  0.8],
+  helmet:     [0.18, 0.5,  4.0, 0.5,  0.15],
+  sphere:     [0.15, 0.5,  4.5, 0.9,  0.9],
 };
 
 // GLB model paths (relative to app root) + credit
 // Per-model target sizes for auto-fit (when scale===1).
 // Increase for larger models that appear too small in the viewport.
 const MODEL_TARGET_SIZE = {
-  car:      3.2,
-  motorbike: 3.4,  // sportbike is longer end-to-end, scale up slightly
-  helmet:   1.5,
-  sphere:   2.2,
+  car:       3.2,
+  torusknot: 2.0,
+  roundbox:  2.0,
+  helmet:    1.5,
+  sphere:    2.2,
 };
 
 const MODEL_SOURCES = {
-  // rawScale = pre-scale correction BEFORE auto-fit (e.g. motorbike is in mm units, needs 0.012 first)
+  // rawScale = pre-scale correction BEFORE auto-fit.
   // All models then auto-fit to MODEL_TARGET_SIZE after rawScale is applied.
-  car:       { path:'./models/ferrari.glb',    credit:'Ferrari (three.js examples, MIT)',          rawScale:1,     offsetY:0.05 },
-  motorbike: { path:'./models/sportbike.glb',     credit:'Sport Superbike (PaintMixer v4.1)',        rawScale:1,     offsetY:-0.05 },
-  helmet:    { path:'./models/helmet.glb',     credit:'Damaged Helmet (CC0, Khronos)',             rawScale:1,     offsetY:0.05 },
-  sphere:    { path:null,                       credit:'',                                          rawScale:1,     offsetY:0 },
+  car:       { path:'./models/ferrari.glb', credit:'Ferrari 458 (three.js examples, MIT)', rawScale:1, offsetY:0.05 },
+  helmet:    { path:'./models/helmet.glb',  credit:'Damaged Helmet (CC0, Khronos)',        rawScale:1, offsetY:0.05 },
+  // Geometric primitives — built procedurally, no GLB needed
+  torusknot: { path:null, credit:'', rawScale:1, offsetY:0 },
+  roundbox:  { path:null, credit:'', rawScale:1, offsetY:0 },
+  sphere:    { path:null, credit:'', rawScale:1, offsetY:0 },
 };
 
 // Cache loaded GLB scenes
@@ -2264,9 +2287,10 @@ function buildModel(type) {
 
   const mp=getEffect3DMat();
 
+  const PRIMITIVE_TYPES = new Set(['sphere','torusknot','roundbox']);
   const texture=new THREE.CanvasTexture(buildPaintTexture());
   texture.wrapS=THREE.RepeatWrapping; texture.wrapT=THREE.RepeatWrapping;
-  texture.repeat.set(type==='sphere'?1:2,type==='sphere'?1:2);
+  texture.repeat.set(PRIMITIVE_TYPES.has(type)?1:2, PRIMITIVE_TYPES.has(type)?1:2);
 
   threeMat=new THREE.MeshPhysicalMaterial({
     map:texture,
@@ -2279,6 +2303,40 @@ function buildModel(type) {
 
   if(type==='sphere') {
     const geo=new THREE.SphereGeometry(1,64,64);
+    threeMesh=new THREE.Mesh(geo,threeMat);
+    threeMesh.castShadow=true; threeMesh.receiveShadow=true;
+    threeMesh.position.y=0.9;
+    threeScene.add(threeMesh);
+    setModelCredit('');
+    return;
+  }
+
+  if(type==='torusknot') {
+    // Torus Knot — complex, high-poly, looks stunning with any paint effect
+    const geo=new THREE.TorusKnotGeometry(0.8,0.28,256,48,2,3);
+    threeMesh=new THREE.Mesh(geo,threeMat);
+    threeMesh.castShadow=true; threeMesh.receiveShadow=true;
+    threeMesh.position.y=1.0;
+    threeScene.add(threeMesh);
+    setModelCredit('');
+    return;
+  }
+
+  if(type==='roundbox') {
+    // Rounded Box — subdivided box with chamfered edges, built from a high-res sphere mapped to cube UVs
+    // We use an IcosahedronGeometry subdivided (looks like a boxy-sphere) + box UVs via custom UVs
+    // Actually: use a BoxGeometry with high segments for smooth shading and great UV layout
+    const geo=new THREE.BoxGeometry(1.5,1.5,1.5,64,64,64);
+    // Push vertices toward sphere surface to round the box
+    const pos=geo.attributes.position;
+    for(let i=0;i<pos.count;i++){
+      const v=new THREE.Vector3(pos.getX(i),pos.getY(i),pos.getZ(i));
+      const len=v.length();
+      const bevel=0.72; // controls roundness: 1.0=sphere, 0=sharp box
+      v.multiplyScalar((1-bevel)+bevel*(0.75/len));
+      pos.setXYZ(i,v.x,v.y,v.z);
+    }
+    geo.computeVertexNormals();
     threeMesh=new THREE.Mesh(geo,threeMat);
     threeMesh.castShadow=true; threeMesh.receiveShadow=true;
     threeMesh.position.y=0.9;
@@ -2360,16 +2418,14 @@ function _applyLoadedGLB(type, sceneTemplate, mat) {
 
 // Procedural fallback credits
 const PROCEDURAL_CREDITS = {
-  car:       'Sport Car (procedural)',
-  motorbike: 'Sport Motorcycle (procedural)',
-  helmet:    'Racing Helmet (procedural)',
+  car:    'Sport Car (procedural)',
+  helmet: 'Racing Helmet (procedural)',
 };
 
 // Procedural fallback (kept for robustness)
 function _buildProceduralModel(type, mat) {
   let group;
-  if(type==='car') group=_buildProceduralCar(mat);
-  else if(type==='motorbike') group=_buildProceduralMotorbike(mat);
+  if(type==='car')       group=_buildProceduralCar(mat);
   else if(type==='helmet') group=_buildProceduralHelmet(mat);
   else { group=new THREE.Group(); }
 
