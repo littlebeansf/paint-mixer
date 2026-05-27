@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PaintMixer — Professional Color Mixing Studio</title>
+  <meta name="description" content="Mix paint colors like a professional. Add up to 8 pigments, apply crystal, marble, metallic, crackle, and many more special effects. See live results instantly." />
+  <meta property="og:title" content="PaintMixer — Professional Color Mixing Studio" />
+  <meta property="og:description" content="Interactive paint color mixing with special effects: Kristall, Marble, Metallic, Crackle, Velvet, Stone, and more." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cabinet+Grotesk:wght@400;500;700;800&family=Satoshi:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <a href="#" class="logo" aria-label="PaintMixer Home">
+        <svg class="logo-svg" aria-hidden="true" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="14" cy="20" r="9" fill="var(--c-red)" opacity="0.85"/>
+          <circle cx="26" cy="20" r="9" fill="var(--c-blue)" opacity="0.85"/>
+          <ellipse cx="20" cy="20" rx="5" ry="9" fill="var(--c-mix)" opacity="0.95"/>
+          <circle cx="20" cy="11" r="3" fill="var(--c-yellow)" opacity="0.9"/>
+        </svg>
+        <span class="logo-text">PaintMixer</span>
+      </a>
+      <nav class="nav-pills">
+        <button class="nav-pill active" data-section="mixer">Mixer</button>
+        <button class="nav-pill" data-section="effects">Effects</button>
+        <button class="nav-pill" data-section="palette">Saved</button>
+      </nav>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle dark mode">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- ====== MIXER SECTION ====== -->
+    <section class="section active" id="section-mixer">
+      <div class="section-title-row">
+        <h1 class="section-title">Color Mixer</h1>
+        <p class="section-subtitle">Add up to 8 pigments, adjust ratios, and see the blended result live.</p>
+      </div>
+
+      <div class="mixer-layout">
+        <!-- Color Slots -->
+        <div class="color-slots-panel">
+          <div class="panel-header">
+            <span class="panel-label">Pigments</span>
+            <button class="btn-add" id="btn-add-color" aria-label="Add color">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add Color
+            </button>
+          </div>
+          <div class="color-slots" id="color-slots">
+            <!-- Slots injected by JS -->
+          </div>
+          <div class="mixer-actions">
+            <button class="btn-secondary" id="btn-clear">Clear All</button>
+            <button class="btn-secondary" id="btn-random">Random Mix</button>
+          </div>
+        </div>
+
+        <!-- Preview Panel -->
+        <div class="preview-panel">
+          <div class="preview-canvas-wrap">
+            <canvas id="preview-canvas" width="400" height="400" aria-label="Mixed paint color preview"></canvas>
+            <div class="preview-ripple-overlay" id="preview-ripple"></div>
+          </div>
+          <div class="preview-meta">
+            <div class="color-hex-display" id="color-hex">
+              <span class="hex-label">HEX</span>
+              <span class="hex-value" id="hex-value">#FFFFFF</span>
+              <button class="btn-copy" id="btn-copy-hex" title="Copy HEX">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </div>
+            <div class="color-rgb-display" id="color-rgb">
+              <span class="rgb-label">RGB</span>
+              <span class="rgb-value" id="rgb-value">255, 255, 255</span>
+            </div>
+            <div class="color-hsl-display" id="color-hsl">
+              <span class="hsl-label">HSL</span>
+              <span class="hsl-value" id="hsl-value">0°, 0%, 100%</span>
+            </div>
+          </div>
+          <button class="btn-primary btn-save-mix" id="btn-save">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save to Palette
+          </button>
+        </div>
+
+        <!-- Active Effect Display -->
+        <div class="effect-display-panel">
+          <div class="panel-header">
+            <span class="panel-label">Active Effect</span>
+            <button class="btn-text" id="btn-goto-effects">Change →</button>
+          </div>
+          <div class="active-effect-preview" id="active-effect-preview">
+            <canvas id="effect-preview-canvas" width="200" height="200" aria-label="Effect preview"></canvas>
+            <div class="effect-name-badge" id="effect-name-badge">No Effect</div>
+          </div>
+          <div class="effect-params" id="effect-params">
+            <p class="no-effect-hint">Select an effect from the Effects tab to enhance your mix.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== EFFECTS SECTION ====== -->
+    <section class="section" id="section-effects">
+      <div class="section-title-row">
+        <h1 class="section-title">Special Effects</h1>
+        <p class="section-subtitle">Choose a decorative finish to apply to your mixed color.</p>
+      </div>
+      <div class="effects-grid" id="effects-grid">
+        <!-- Effect cards injected by JS -->
+      </div>
+    </section>
+
+    <!-- ====== SAVED PALETTE SECTION ====== -->
+    <section class="section" id="section-palette">
+      <div class="section-title-row">
+        <h1 class="section-title">Saved Palette</h1>
+        <p class="section-subtitle">Your saved mixes. Click any swatch to reload it into the mixer.</p>
+      </div>
+      <div class="saved-palette" id="saved-palette">
+        <div class="palette-empty" id="palette-empty">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm-8 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
+          <p>No mixes saved yet. Create a mix and save it!</p>
+        </div>
+        <div class="palette-grid" id="palette-grid"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast notification -->
+  <div class="toast" id="toast" role="alert" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
