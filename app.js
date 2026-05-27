@@ -1464,8 +1464,8 @@ function openCompareModal(items) {
     </div>
     <div class="compare-model-selector">
       <span class="compare-model-label">Model:</span>
-      ${['car','torusknot','roundbox','helmet','sphere','duck','shaderball','rolex','gears','mug'].map(m=>{
-        const labels={car:'Car',torusknot:'Knot',roundbox:'Box',helmet:'Helmet',sphere:'Sphere',duck:'Duck',shaderball:'Ball',rolex:'Watch',gears:'Gears',mug:'Mug'};
+      ${['car','torusknot','roundbox','helmet','sphere','duck','shaderball','rolex','gears'].map(m=>{
+        const labels={car:'Car',torusknot:'Knot',roundbox:'Box',helmet:'Helmet',sphere:'Sphere',duck:'Duck',shaderball:'Ball',rolex:'Watch',gears:'Gears'};
         return `<button class="cmp-model-btn${m==='car'?' active':''}" data-model="${m}">${labels[m]||m}</button>`;
       }).join('')}
     </div>
@@ -2126,7 +2126,6 @@ const MODEL_CAM = {
   shaderball: [0.18, 0.4,  4.0, 0.6,  0.3],
   rolex:      [0.20, 0.4,  3.5, 0.5,  0.0],
   gears:      [0.25, 0.5,  4.2, 0.6,  0.3],
-  mug:        [0.18, 0.4,  3.8, 0.5,  0.2],
   sphere:     [0.15, 0.5,  4.5, 0.9,  0.9],
 };
 
@@ -2142,7 +2141,6 @@ const MODEL_TARGET_SIZE = {
   shaderball: 1.8,
   rolex:      1.4,
   gears:      2.0,
-  mug:        1.5,
   sphere:     2.2,
 };
 
@@ -2155,7 +2153,6 @@ const MODEL_SOURCES = {
   shaderball: { path:'./models/shaderball.glb', credit:'Shader Ball (three.js examples, CC0)',    rawScale:1, offsetY:0 },
   rolex:      { path:'./models/rolex.glb',      credit:'Watch case (three.js examples, CC0)',     rawScale:1, offsetY:0 },
   gears:      { path:'./models/gears.glb',      credit:'Mechanical Gears (three.js examples, CC0)', rawScale:1, offsetY:0 },
-  mug:        { path:'./models/mug.glb',        credit:'Coffee Mug (three.js examples, CC0)',    rawScale:1, offsetY:0 },
   // Geometric primitives — built procedurally
   torusknot:  { path:null, credit:'', rawScale:1, offsetY:0 },
   roundbox:   { path:null, credit:'', rawScale:1, offsetY:0 },
