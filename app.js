@@ -1398,23 +1398,260 @@ document.getElementById('btn-save')?.addEventListener('click',()=>{
   const btn=document.getElementById('btn-save');
   btn.style.background='var(--color-success)'; setTimeout(()=>btn.style.background='',900);
 });
+
+// ---- COMPARE MODE ----
+let compareSelected = new Set(); // set of item ids
+
+function toggleCompareItem(id) {
+  if(compareSelected.has(id)) {
+    compareSelected.delete(id);
+  } else {
+    if(compareSelected.size>=4) { showToast('Max 4 designs for compare'); return; }
+    compareSelected.add(id);
+  }
+  renderSavedPalette();
+  updateCompareBar();
+}
+
+function updateCompareBar() {
+  const bar=document.getElementById('compare-bar');
+  if(!bar) return;
+  const count=compareSelected.size;
+  if(count>=2) {
+    bar.style.display='flex';
+    bar.querySelector('.compare-count').textContent=`${count} design${count>1?'s':''} selected`;
+  } else {
+    bar.style.display='none';
+  }
+}
+
+function launchCompare() {
+  const items=state.savedPalette.filter(p=>compareSelected.has(p.id));
+  if(items.length<2) return;
+  openCompareModal(items);
+}
+
+function openCompareModal(items) {
+  // Remove existing modal if any
+  document.getElementById('compare-modal')?.remove();
+  const overlay=document.createElement('div'); overlay.id='compare-modal'; overlay.className='modal-overlay';
+  const modal=document.createElement('div'); modal.className='modal-box compare-modal-box';
+  modal.innerHTML=`
+    <div class="modal-header">
+      <h3>Compare Designs in 3D</h3>
+      <button class="modal-close" id="compare-close">&#x2715;</button>
+    </div>
+    <div class="compare-model-selector">
+      <span class="compare-model-label">Model:</span>
+      ${['car','motorbike','helmet','sphere'].map(m=>`<button class="cmp-model-btn${m==='car'?' active':''}" data-model="${m}">${m.charAt(0).toUpperCase()+m.slice(1)}</button>`).join('')}
+    </div>
+    <div class="compare-grid" id="compare-renderers"></div>
+  `;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  requestAnimationFrame(()=>overlay.classList.add('visible'));
+  document.getElementById('compare-close').onclick=()=>{ closeCompareModal(overlay); };
+  overlay.addEventListener('click',e=>{ if(e.target===overlay) closeCompareModal(overlay); });
+
+  let cmpModel='car';
+  modal.querySelectorAll('.cmp-model-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      modal.querySelectorAll('.cmp-model-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      cmpModel=btn.dataset.model;
+      buildCompareRenderers(items, cmpModel);
+    });
+  });
+
+  buildCompareRenderers(items, cmpModel);
+}
+
+function closeCompareModal(overlay) {
+  overlay.classList.remove('visible');
+  // Dispose Three.js renderers inside
+  overlay.querySelectorAll('canvas[data-cmp-renderer]').forEach(c=>{
+    try { c._cmpRenderer?.dispose(); } catch(e){}
+  });
+  setTimeout(()=>overlay.remove(), 300);
+}
+
+function buildCompareRenderers(items, modelType) {
+  const container=document.getElementById('compare-renderers');
+  if(!container) return;
+  // Dispose old
+  container.querySelectorAll('canvas[data-cmp-renderer]').forEach(c=>{ try { c._cmpRenderer?.dispose(); } catch(e){} });
+  container.innerHTML='';
+
+  items.forEach(item=>{
+    const cell=document.createElement('div'); cell.className='compare-cell';
+    const label=document.createElement('div'); label.className='compare-cell-label';
+    label.innerHTML=`<span class="compare-cell-swatch" style="background:${item.hex}"></span><span>${item.hex.toUpperCase()}</span><span class="compare-cell-effect">${item.effectId!=='none'?item.effect:''}</span>`;
+    const canvasWrap=document.createElement('div'); canvasWrap.className='compare-canvas-wrap';
+    const canvas=document.createElement('canvas');
+    canvas.setAttribute('data-cmp-renderer','1');
+    const W=Math.min(320, Math.floor((window.innerWidth*0.9-80)/items.length));
+    const H=Math.round(W*0.72);
+    canvas.width=W; canvas.height=H; canvas.style.width=W+'px'; canvas.style.height=H+'px';
+    canvasWrap.appendChild(canvas);
+    cell.appendChild(label);
+    cell.appendChild(canvasWrap);
+    container.appendChild(cell);
+    // Render this item on its canvas
+    _renderCompareSingle(canvas, item, modelType);
+  });
+}
+
+function _renderCompareSingle(canvas, item, modelType) {
+  const W=canvas.width, H=canvas.height;
+  // Build mini Three.js renderer
+  let rend;
+  try {
+    rend=new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+    rend.setPixelRatio(Math.min(window.devicePixelRatio,2));
+    rend.setSize(W,H);
+    rend.shadowMap.enabled=true;
+    rend.shadowMap.type=THREE.PCFSoftShadowMap;
+    rend.toneMapping=THREE.ACESFilmicToneMapping;
+    rend.toneMappingExposure=1.1;
+  } catch(e){ return; }
+  canvas._cmpRenderer=rend;
+
+  const scene=new THREE.Scene(); scene.background=new THREE.Color(0x1a1a2e);
+  const cam=new THREE.PerspectiveCamera(45,W/H,0.1,100);
+  const camCfg=MODEL_CAM[modelType]||MODEL_CAM.car;
+  cam.position.set(Math.sin(camCfg[1])*camCfg[2], camCfg[3]||0.6, Math.cos(camCfg[1])*camCfg[2]);
+  cam.lookAt(0, camCfg[4]||0.15, 0);
+
+  // Lighting: multiple lights to approximate env map for metallic/chrome effects
+  scene.add(new THREE.AmbientLight(0xffffff,0.5));
+  const dLight=new THREE.DirectionalLight(0xffffff,1.5); dLight.position.set(3,5,4); dLight.castShadow=true; scene.add(dLight);
+  const dLight2=new THREE.DirectionalLight(0xddeeff,0.8); dLight2.position.set(-3,2,-2); scene.add(dLight2);
+  const dLight3=new THREE.DirectionalLight(0xfff0dd,0.5); dLight3.position.set(0,-3,3); scene.add(dLight3);
+  scene.add(new THREE.HemisphereLight(0xffeedd,0x334455,0.7));
+
+  // Build texture from item
+  const effObj=EFFECTS.find(e=>e.id===item.effectId);
+  const tc=document.createElement('canvas'); tc.width=1024; tc.height=1024;
+  const tCtx=tc.getContext('2d');
+  if(effObj&&item.effectId!=='none'){
+    const p=item.effectParams||{};
+    effObj.params.forEach(pp=>{ if(!(pp.id in p)) p[pp.id]=pp.default; });
+    try { effObj.render(tCtx,1024,1024,item.rgb,p,0); } catch(e2){ tCtx.fillStyle=item.hex; tCtx.fillRect(0,0,1024,1024); }
+  } else { tCtx.fillStyle=item.hex; tCtx.fillRect(0,0,1024,1024); }
+  const tex=new THREE.CanvasTexture(tc);
+  tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.RepeatWrapping;
+  tex.repeat.set(modelType==='sphere'?1:2,modelType==='sphere'?1:2);
+
+  const mp=EFFECT_3D_MATS[item.effectId]||EFFECT_3D_MATS['none'];
+  const mat=new THREE.MeshPhysicalMaterial({
+    map:tex, roughness:mp.roughness, metalness:mp.metalness,
+    clearcoat:mp.clearcoat, clearcoatRoughness:mp.clearcoatRoughness,
+    envMapIntensity:mp.envMapIntensity
+  });
+
+  function addAndRender(group) {
+    scene.add(group);
+    rend.render(scene,cam);
+  }
+
+  function fitAndApply(group, src2) {
+    const rawScale2=src2.rawScale||1;
+    if(rawScale2!==1) group.scale.setScalar(rawScale2);
+    group.updateMatrixWorld(true);
+    const box=new THREE.Box3().setFromObject(group);
+    const sz=box.getSize(new THREE.Vector3()); const md=Math.max(sz.x,sz.y,sz.z);
+    if(md>0) group.scale.setScalar((rawScale2*(MODEL_TARGET_SIZE[modelType]||2.2))/md);
+    group.updateMatrixWorld(true);
+    const box2=new THREE.Box3().setFromObject(group);
+    const ctr=box2.getCenter(new THREE.Vector3()); const minY=box2.min.y;
+    group.position.set(-ctr.x,-minY+(src2.offsetY||0),-ctr.z);
+    applyPaintToGroup(group,mat,false);
+    addAndRender(group);
+  }
+
+  if(modelType==='sphere') {
+    const geo=new THREE.SphereGeometry(1,64,64);
+    const mesh=new THREE.Mesh(geo,mat);
+    mesh.position.y=0.9;
+    addAndRender(mesh);
+    return;
+  }
+
+  const src2=MODEL_SOURCES[modelType]||{};
+
+  // Use cached GLB if available; otherwise load it (then render), or use procedural
+  if(gltfCache[modelType]) {
+    fitAndApply(gltfCache[modelType].clone(true), src2);
+  } else if(src2.path) {
+    // Show loading overlay in the wrapper div (not on the canvas)
+    const wrap=canvas.parentElement;
+    const loadDiv=document.createElement('div');
+    loadDiv.style.cssText='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.5);font-size:11px;pointer-events:none;background:rgba(10,10,20,.6)';
+    loadDiv.textContent='Loading…';
+    if(wrap){ wrap.style.position='relative'; wrap.appendChild(loadDiv); }
+    const ldr=getGLTFLoader();
+    ldr.load(src2.path, (gltf)=>{
+      gltfCache[modelType]=gltf.scene; // cache for future use
+      if(loadDiv.parentElement) loadDiv.remove();
+      fitAndApply(gltf.scene.clone(true), src2);
+    }, null, ()=>{
+      if(loadDiv.parentElement) loadDiv.remove();
+      const pgroup=_buildCompareProceduralModel(modelType, mat);
+      addAndRender(pgroup);
+    });
+  } else {
+    const pgroup=_buildCompareProceduralModel(modelType, mat);
+    addAndRender(pgroup);
+  }
+}
+
+function _buildCompareProceduralModel(type, mat) {
+  if(type==='car') return _buildProceduralCar(mat);
+  if(type==='motorbike') return _buildProceduralMotorbike(mat);
+  if(type==='helmet') return _buildProceduralHelmet(mat);
+  return new THREE.Group();
+}
+
 function renderSavedPalette() {
   const empty=document.getElementById('palette-empty'), grid=document.getElementById('palette-grid');
   if(!empty||!grid) return;
   empty.style.display=state.savedPalette.length?'none':'flex';
   grid.innerHTML='';
+
+  // Compare toolbar (injected once above grid)
+  let compareBar=document.getElementById('compare-bar');
+  if(!compareBar) {
+    compareBar=document.createElement('div'); compareBar.id='compare-bar'; compareBar.className='compare-bar';
+    compareBar.innerHTML=`<span class="compare-count">0 designs selected</span><button class="compare-launch-btn" id="compare-launch-btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18"/><rect x="14" y="3" width="7" height="18"/></svg>Compare in 3D</button><button class="compare-clear-btn" id="compare-clear-btn">Clear</button>`;
+    const paletteSection=document.getElementById('section-palette');
+    const savedPaletteDiv=paletteSection?.querySelector('.saved-palette');
+    savedPaletteDiv?.insertBefore(compareBar, savedPaletteDiv.querySelector('.palette-grid'));
+    document.getElementById('compare-launch-btn')?.addEventListener('click',launchCompare);
+    document.getElementById('compare-clear-btn')?.addEventListener('click',()=>{ compareSelected.clear(); renderSavedPalette(); updateCompareBar(); });
+  }
+  updateCompareBar();
+
   state.savedPalette.forEach(item=>{
     const el=document.createElement('div'); el.className='palette-item';
+    if(compareSelected.has(item.id)) el.classList.add('compare-selected');
     // Swatch canvas
     const swCanvas=document.createElement('canvas'); swCanvas.className='palette-swatch'; swCanvas.width=120; swCanvas.height=120;
     // Info row
     const infoDiv=document.createElement('div'); infoDiv.className='palette-item-body';
     const hasEffect=item.effectId&&item.effectId!=='none';
-    const effectLabel=hasEffect?`<span class="palette-item-effect" title="${item.effect}">${item.effect}</span>`:'';
     infoDiv.innerHTML=`<span class="palette-item-hex">${item.hex.toUpperCase()}</span><button class="palette-item-delete" title="Remove"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg></button>`;
-    // Test in 3D action row
+    if(hasEffect) {
+      const effSpan=document.createElement('span'); effSpan.className='palette-item-effect'; effSpan.title=item.effect; effSpan.textContent=item.effect;
+      infoDiv.insertBefore(effSpan, infoDiv.firstChild);
+    }
+    // Actions row
     const actionsDiv=document.createElement('div'); actionsDiv.className='palette-item-actions';
-    actionsDiv.innerHTML=`<button class="btn-test3d"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>Test in 3D</button>`;
+    actionsDiv.innerHTML=`
+      <button class="btn-test3d" title="Test in 3D Preview"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>3D</button>
+      <button class="btn-compare-toggle" title="Select for Compare"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18"/><rect x="14" y="3" width="7" height="18"/></svg>${compareSelected.has(item.id)?'Deselect':'Compare'}</button>
+      <button class="btn-recipe" title="How to recreate"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>Recipe</button>
+    `;
     el.appendChild(swCanvas);
     el.appendChild(infoDiv);
     el.appendChild(actionsDiv);
@@ -1428,12 +1665,351 @@ function renderSavedPalette() {
     } else { swCtx.fillStyle=item.hex; swCtx.fillRect(0,0,120,120); }
     // Click swatch: load into Mixer
     swCanvas.addEventListener('click',()=>{ state.colors=item.colors.map(c=>({...c,id:uid()})); buildColorSlots(); showToast(`Loaded ${item.hex.toUpperCase()}`); document.querySelector('.nav-pill[data-section="mixer"]')?.click(); });
-    // Click Test in 3D
+    // Test in 3D
     actionsDiv.querySelector('.btn-test3d').addEventListener('click',e=>{ e.stopPropagation(); testPaletteIn3D(item); });
+    // Compare toggle
+    actionsDiv.querySelector('.btn-compare-toggle').addEventListener('click',e=>{ e.stopPropagation(); toggleCompareItem(item.id); });
+    // Recipe
+    actionsDiv.querySelector('.btn-recipe').addEventListener('click',e=>{ e.stopPropagation(); openRecipeModal(item); });
     // Delete
-    infoDiv.querySelector('.palette-item-delete').addEventListener('click',e=>{ e.stopPropagation(); state.savedPalette=state.savedPalette.filter(p=>p.id!==item.id); renderSavedPalette(); });
+    infoDiv.querySelector('.palette-item-delete').addEventListener('click',e=>{ e.stopPropagation(); compareSelected.delete(item.id); state.savedPalette=state.savedPalette.filter(p=>p.id!==item.id); renderSavedPalette(); });
     grid.appendChild(el);
   });
+}
+
+// ---- RECIPE PANEL ----
+function buildRecipeSteps(item) {
+  const eff=item.effectId||'none';
+  const hex=item.hex.toUpperCase();
+  // Parse dominant colour properties
+  const [r,g,b]=item.rgb;
+  const brightness=(r*299+g*587+b*114)/1000;
+  const isBright=brightness>170;
+  const isDark=brightness<60;
+  const isWarm=r>g&&r>b;
+  const isCool=b>r&&b>g;
+
+  // Color ratio description
+  const totalPct=item.colors.reduce((s,c)=>s+c.pct,0)||100;
+  const colorList=item.colors.filter(c=>c.pct>0).map(c=>`${c.hex.toUpperCase()} at ${Math.round(c.pct/totalPct*100)}%`).join(', ');
+
+  const effectInstructions = {
+    'none': {
+      title:'Solid Colour Coat',
+      steps:[
+        {step:'Surface Prep',detail:`Sand the surface to 400-grit, then 800-grit wet. Wipe clean with isopropyl alcohol or panel wipe solvent. Ensure zero dust, grease or moisture.`},
+        {step:'Primer',detail:`Apply 2 light coats of grey 2K epoxy primer. Let flash off 10 min between coats, then cure 30–45 min at 20 °C.`},
+        {step:'Base Coat Mix',detail:`Mix your base paint: ${colorList}. Stir thoroughly for 5 min. Strain through 190-micron filter. Thin with 10–15 % reducer for spray viscosity (20–25 sec DIN 4).`},
+        {step:'Application',detail:`Spray 2–3 medium wet coats at 1.5–2 bar / 50 cm distance. Allow 10–15 min flash between coats.`},
+        {step:'Clear Coat',detail:`Apply 2 coats of 2K gloss clear. Allow to dry 24 h before light handling, 7 days full cure.`},
+      ]
+    },
+    'metallic': {
+      title:'Metallic Finish',
+      steps:[
+        {step:'Surface Prep',detail:`Sand to 600-grit, degrease. Apply 2-coat grey primer, sand primer with 800-grit.`},
+        {step:'Base Coat',detail:`Mix base colour (${colorList}). Reduce to spray viscosity. Apply 2 coats, directing final coat at low pressure (1 bar) to keep flake oriented flat — this gives maximum metallic sparkle.`},
+        {step:'Flake Blending',detail:`For extra depth add 2–5 % aluminium or mica powder to the final coat and stir constantly. Keep pot time under 45 min.`},
+        {step:'Uniform Clear',detail:`Seal with 3 coats of 2K clear, wet-sanding between coats (1500-grit) for mirror finish.`},
+        {step:'Polishing',detail:`Machine polish with 2000-grit compound, then 3000-grit swirl remover. Finish with carnauba wax.`},
+      ]
+    },
+    'hammered': {
+      title:'Hammered Texture Finish',
+      steps:[
+        {step:'Surface Prep',detail:'Sand to 120-grit (texture needs bite). Degrease thoroughly.'},
+        {step:'Primer',detail:'Apply 1 heavy coat of self-etching primer, do not sand — the texture needs adhesion peaks.'},
+        {step:'Hammered Coat',detail:`Use a specialist hammered-finish aerosol or alkyd hammertone. Apply at 30 cm distance in light, criss-cross passes. The texture forms as the solvent evaporates — do not over-apply or texture collapses.`},
+        {step:'Colour',detail:`Mix ${colorList}. Add 5 % hammertone texture additive if using liquid paint. Spray 2 criss-cross coats.`},
+        {step:'Seal',detail:`Seal with a flat or satin 2K clear to preserve the texture (gloss clear will fill pits).`},
+      ]
+    },
+    'chrome': {
+      title:'Chrome / Mirror Finish',
+      steps:[
+        {step:'Surface Prep',detail:`Feather sand to 1200-grit wet. Surface must be GLASS smooth — every imperfection will show 10×.`},
+        {step:'Gloss Black Base',detail:`Apply 2 coats of high-gloss jet black base. Wet-sand with 2000-grit, then 3000-grit. Buff to mirror.`},
+        {step:'Chrome Medium',detail:`Spray a specialist chrome medium (e.g. Alsa Chrome, Spraymax 2K Chrome) in very thin, even passes at 20 cm. Overlap 50 %.`},
+        {step:'Cure',detail:`Allow 2 h tack-off. Do NOT touch — fingerprints etch permanently.`},
+        {step:'Protective Clear',detail:`Apply a chrome-compatible clear coat (NON-acid clear). Chrome clears are specialist — regular 2K may tarnish the mirror layer.`},
+      ]
+    },
+    'brushed-gold': {
+      title:'Brushed Gold Finish',
+      steps:[
+        {step:'Base Coat',detail:`Apply 2 coats of warm gold base (${colorList}). Allow full cure.`},
+        {step:'Masking',detail:`Mask the surrounding area. Apply linear sanding film (240-grit) in one direction only — always parallel strokes, never circular.`},
+        {step:'Grain Direction',detail:`Brush the cured surface with a fine bristle pad in one axis. Maintain consistent pressure and direction.`},
+        {step:'Gold Toner',detail:`Apply a transparent gold toner (candy coat) over the brushed surface to deepen the warm gold tone.`},
+        {step:'Satin Clear',detail:`Seal with 2 coats of satin clear to protect the brushed grain while keeping the muted sheen.`},
+      ]
+    },
+    'kristall': {
+      title:'Kristall (Crystal Effect) Finish',
+      steps:[
+        {step:'Surface Prep',detail:`Sand to 800-grit wet, degrease. Surface must be very smooth for crystal clarity.`},
+        {step:'White or Silver Base',detail:`Apply a pearlescent white or silver base — this acts as the light reflector beneath the crystal layer.`},
+        {step:'Colour Base',detail:`Apply 1–2 coats of ${hex} transparent candy paint over the base. Thin to 15 % for translucency.`},
+        {step:'Crystal Flakes',detail:`Mix 5–8 % holographic crystal flake (0.1 mm multi-chrome flake) into a clear binder. Apply 1 medium coat. Adjust angle of spray for maximum refraction.`},
+        {step:'Crystal Clear',detail:`Seal with 4 coats of high-solids crystal clear (must be UV-stable). Wet-sand to 3000-grit between coats 3 and 4.`},
+        {step:'Polish',detail:`Machine compound + polish to give the glass-like, gem-quality surface.`},
+      ]
+    },
+    'pearl': {
+      title:'Pearl / Pearlescent Finish',
+      steps:[
+        {step:'Surface Prep',detail:`Standard body prep: 400 → 800 grit, degrease, 2K primer, 1200-grit wet.`},
+        {step:'Pearl Base',detail:`Mix ${colorList} with 3–6 % pearl pigment (mica-based). Keep stirring — pearl pigment settles quickly.`},
+        {step:'Application',detail:`Spray 3 medium coats. Orient the final coat at low angle to maximise pearl iridescence.`},
+        {step:'Toner',detail:`Optional: 1 very thin toner coat in a complementary candy colour to shift the pearl's hue under different light.`},
+        {step:'Clear Coat',detail:`2–3 coats of high-gloss 2K clear. Pearl finishes benefit from extra clear depth.`},
+        {step:'Polish',detail:`Final machine polish with fine compound to bring out the pearl depth.`},
+      ]
+    },
+    'mica': {
+      title:'Mica / Interference Finish',
+      steps:[
+        {step:'Prep',detail:'800-grit + primer as standard.'},
+        {step:'Mica Mix',detail:`Add 4–8 % mica powder (choose the interference angle: 15 ° = blue shift, 45 ° = gold, 75 ° = red/magenta) to your base (${colorList}).`},
+        {step:'Spray',detail:`Apply 3 coats at consistent angle to build up the interference layer. Distance: 40 cm, pressure: 1.2 bar.`},
+        {step:'Clear',detail:`2 coats 2K gloss clear.`},
+      ]
+    },
+    'opal': {
+      title:'Opal / Iridescent Finish',
+      steps:[
+        {step:'White Base',detail:`Apply 2 coats pearl white — this is the light-scattering layer beneath the opal effect.`},
+        {step:'Opal Flake Coat',detail:`Mix synthetic opal flakes (silicon dioxide, 0.05 mm) into a clear binder at 3 %. Spray 2 even coats.`},
+        {step:'Colour Tint',detail:`Apply a very thin (10–15 %) transparent tint of ${hex} over the opal to anchor the colour shift.`},
+        {step:'Clear Coat',detail:`4 coats ultra-clear 2K. The more clear depth, the deeper the opal fire.`},
+      ]
+    },
+    'marble': {
+      title:'Marble Effect Finish',
+      steps:[
+        {step:'Base Coat',detail:`Apply 2 coats gloss white or ${hex} base.`},
+        {step:'Vein Masking',detail:`Once base is dry (not cured), lay torn low-tack tape strips or use a feather to mask freeform vein patterns.`},
+        {step:'Vein Coat',detail:`Spray contrasting dark (or gold) over the masked areas. Remove masking while wet.`},
+        {step:'Blending',detail:`Use a soft brush or compressed air to diffuse the vein edges before they dry.`},
+        {step:'Clear Coat',detail:`Seal immediately with 2–3 coats of high-gloss clear. Polish to bring out the stone-like depth.`},
+      ]
+    },
+    'granite': {
+      title:'Granite Texture Finish',
+      steps:[
+        {step:'Base Coat',detail:`Apply 1 coat of dark base (grey or charcoal).`},
+        {step:'Texture Coat',detail:`Use a multi-colour hammertone / textured aerosol (e.g. Rust-Oleum Textured finish) or mix 3 colours of spatter into a gun. Apply at 60 cm distance in criss-cross short bursts.`},
+        {step:'Spatter Layer',detail:`Load a separate gun with a contrasting light colour thinned to 5 % and spatter at arm's length for the granite mineral fleck.`},
+        {step:'Seal',detail:`2 coats matte or satin clear (gloss reveals texture too harshly).`},
+      ]
+    },
+    'sand': {
+      title:'Sand Texture Finish',
+      steps:[
+        {step:'Primer',detail:'1 coat self-etching primer, 1 coat filler primer.'},
+        {step:'Sand Additive',detail:`Mix 15–20 % fine silica sand additive (e.g. anti-slip floor additive) into base paint (${colorList}).`},
+        {step:'Application',detail:`Spray 2 heavy coats at 25 cm / 2 bar. The silica particles embed in the wet film to give the tactile sandy surface.`},
+        {step:'Seal',detail:`Seal with flat clear. Gloss clear will diminish the sandy feel.`},
+      ]
+    },
+    'concrete': {
+      title:'Concrete Effect Finish',
+      steps:[
+        {step:'Prep',detail:'Lightly sand surface, do not polish. Apply 1 coat filler primer.'},
+        {step:'Base',detail:`Mix 2 parts grey base + 1 part beige + trace of black (${colorList}). Apply 1 very thin coat.`},
+        {step:'Texture',detail:`Dab a damp sea sponge into a slightly darker grey and stamp over the wet base to create the irregular concrete aggregate texture.`},
+        {step:'Streak Detail',detail:`Use a small brush to add thin vertical streaks in a slightly lighter grey (water staining effect).`},
+        {step:'Seal',detail:`Matte clear coat. 2 coats.`},
+      ]
+    },
+    'crackle': {
+      title:'Crackle Effect Finish',
+      steps:[
+        {step:'Base Colour',detail:`Apply 1 coat of base colour (usually contrasting — white base under dark crackle, or gold under black).`},
+        {step:'Crackle Medium',detail:`Apply crackle medium (PVA-based) immediately over the wet base in a single-direction pass. Thickness controls crack size — thick = large cracks, thin = fine web.`},
+        {step:'Top Colour',detail:`Apply top colour (${colorList}) over the crackle medium within 15–30 min (while medium is still drying). As it dries it will crack to reveal the base beneath.`},
+        {step:'Seal',detail:`Once fully crackled and dry (24 h), apply a flat or satin clear coat — do NOT use gloss (it can reflow the crackle).`},
+      ]
+    },
+    'rust': {
+      title:'Faux Rust Patina Finish',
+      steps:[
+        {step:'Metal Effect Base',detail:`Apply 1 coat of iron-powder paint (e.g. Rust-Oleum Metallic or Real Metal Iron coat).`},
+        {step:'Rust Activator',detail:`Spray or brush on the rust activator (acetic acid / ferric oxide solution). Leave undisturbed for 8–24 h. The iron particles will oxidise into realistic rust.`},
+        {step:'Colour Wash',detail:`If adjusting the rust hue (${colorList}), apply a very thin colour wash (diluted 1:5 with water/solvent) once patina is set.`},
+        {step:'Seal',detail:`Seal with a flat or matte UV-clear to lock the patina and prevent further oxidisation.`},
+      ]
+    },
+    'oxidised': {
+      title:'Oxidised Metal Patina Finish',
+      steps:[
+        {step:'Base Layer',detail:`Apply 2 coats of real copper, brass, or bronze paint (contains actual metal powder).`},
+        {step:'Patina Solution',detail:`Apply liver of sulfur (potassium polysulfide) solution with a brush for a dark brownish-black patina, or salt + ammonia vapor for green verdigris.`},
+        {step:'Colour',detail:`For your specific colour (${colorList}), use a transparent tint wash to unify the oxidised tones.`},
+        {step:'Preservation',detail:`Apply 2 coats of flat lacquer to preserve the patina stage you want.`},
+      ]
+    },
+    'velvet': {
+      title:'Velvet / Suede Effect Finish',
+      steps:[
+        {step:'Prep',detail:'Clean thoroughly. Any surface contamination will ruin the velvet texture.'},
+        {step:'Primer',detail:`Apply 1 coat speciality rubber-flex primer for better textile adhesion.`},
+        {step:'Velvet Coat',detail:`Use electrostatic flock spray or automotive suede spray (e.g. Plasti-Dip Suede). Mix base colour (${colorList}) into the suede binder. Apply at 20 cm, multiple thin passes — never a single heavy pass (it will pool).`},
+        {step:'Second Coat',detail:`Apply second coat at 90 ° to the first for uniform texture density.`},
+        {step:'No Clear',detail:`Velvet finishes should NOT be clear coated — it destroys the texture. Leave as-is.`},
+      ]
+    },
+    'fabric': {
+      title:'Fabric Texture Finish',
+      steps:[
+        {step:'Primer',detail:'Flex primer coat.'},
+        {step:'Fabric Additive',detail:`Mix fabric texture additive (rayon fibre or glass fibre) into base (${colorList}) at 10 % by volume.`},
+        {step:'Application',detail:`Spray 3 medium coats. Fibres align during spraying to create a woven-look micro-texture.`},
+        {step:'Seal',detail:`Flat clear coat.`},
+      ]
+    },
+    'wood': {
+      title:'Faux Wood Grain Finish',
+      steps:[
+        {step:'Base Coat',detail:`Apply 2 coats of a light wood-tone base (${colorList}).`},
+        {step:'Graining Coat',detail:`Mix a darker brown glaze (tinted with raw umber + burnt sienna). Apply over the base while it is still slightly tacky.`},
+        {step:'Wood Grain',detail:`Drag a rubber wood-grain tool, wide comb, or crumpled plastic wrap through the wet glaze in long arcs to simulate grain. Vary pressure for natural irregularity.`},
+        {step:'Knot Detail',detail:`Use a small round brush to add oval knot patterns in the darkest tone.`},
+        {step:'Seal',detail:`2 coats satin clear to mimic an oiled wood finish.`},
+      ]
+    },
+    'leather': {
+      title:'Faux Leather Effect Finish',
+      steps:[
+        {step:'Prep',detail:`Sand to 400-grit, flex primer.`},
+        {step:'Leather Paint',detail:`Use a flexible leather-effect aerosol (e.g. SEM Color Coat) or mix leather pigment binder with ${colorList}.`},
+        {step:'Texture',detail:`Apply 2 coats. Before fully dry, lightly crumple plastic wrap and press/roll over the surface to impart grain.`},
+        {step:'Shade & Highlight',detail:`Spray a darker shade into recesses to deepen the pore texture. Dry-brush lighter highlights on raised areas.`},
+        {step:'Seal',detail:`Finish with leather sealer or matte clear coat.`},
+      ]
+    },
+    'glitter': {
+      title:'Glitter / Sparkle Finish',
+      steps:[
+        {step:'Base Coat',detail:`Apply 2 coats of base colour (${colorList}).`},
+        {step:'Glitter Mix',detail:`Mix 5–15 % holographic or metal glitter (0.2–1 mm) into a clear binder. Stir constantly — glitter sinks fast.`},
+        {step:'Application',detail:`Spray 1–2 coats of glitter binder mix. Use a larger-orifice nozzle (1.8–2.0 mm) to prevent blockage.`},
+        {step:'Inter-coat Clear',detail:`Apply 1 clear coat to encapsulate the glitter before final coats.`},
+        {step:'Top Clear',detail:`2–3 more coats of high-gloss clear + polish for a glass-over-glitter look.`},
+      ]
+    },
+    'galaxy': {
+      title:'Galaxy / Deep Space Finish',
+      steps:[
+        {step:'Matte Black Base',detail:`Apply 2 coats of deep matte black.`},
+        {step:'Nebula Layers',detail:`Using a sponge: dab on very thin patches of purple, deep blue, and teal around the panel. Blend edges with compressed air or dry brush. Build 3–4 overlapping layers.`},
+        {step:'Star Spatter',detail:`Thin silver paint to water consistency. Flick a stiff brush loaded with silver (very little paint) at the surface from 30 cm to create star-spatter.`},
+        {step:'Glitter Stars',detail:`While star coat is wet, dust with ultra-fine holographic glitter.`},
+        {step:'Clear',detail:`4 coats of high-gloss UV clear to give depth to the galaxy.`},
+      ]
+    },
+    'neon-glow': {
+      title:'Neon Glow Finish',
+      steps:[
+        {step:'White Base',detail:`Apply 2 coats of gloss white — this maximises fluorescent intensity.`},
+        {step:'Neon Paint',detail:`Apply 2–3 coats of UV-reactive fluorescent paint (${colorList}). Reduce to 10 % for maximum colour saturation.`},
+        {step:'UV Test',detail:`Check under UV (blacklight) to confirm the glow intensity before clearing.`},
+        {step:'Clear',detail:`Apply a UV-stable gloss clear. Non-UV-stable clears will yellow and kill the fluorescent effect over time.`},
+      ]
+    },
+    'holographic': {
+      title:'Holographic / Spectral Finish',
+      steps:[
+        {step:'Mirror-Smooth Prep',detail:`Sand to 2000-grit wet. The holographic diffraction grating must lie perfectly flat — any surface roughness scatters the rainbow.`},
+        {step:'Chrome Base',detail:`Apply chrome or silver base coat to maximise reflectivity underneath the holographic layer.`},
+        {step:'Holographic Pigment',detail:`Mix 3–5 % holographic diffraction pigment into a clear binder. Stir gently (excessive shear destroys the grating). Spray 2 even coats at 40 cm distance.`},
+        {step:'Encapsulate',detail:`Apply 2 thin coats of crystal clear immediately — holo pigment is fragile.`},
+        {step:'Final Clear',detail:`2 more coats of high-gloss clear + wet-sand to 3000 + machine polish.`},
+      ]
+    },
+    'chameleon': {
+      title:'Colour-Shift Chameleon Finish',
+      steps:[
+        {step:'Black Base',detail:`Apply 2 coats of gloss black — chameleon pigments need a dark background to shift colour properly.`},
+        {step:'Chameleon Pigment',detail:`Mix 2–4 % colour-shift (chameleon) flake (e.g. ColorShift by ChromaFlair or House of Kolor) into a clear binder. Apply 2–3 thin coats at 45 ° angle.`},
+        {step:'Viewing Angle Test',detail:`Check the shift range at 0 °, 45 °, and 90 ° to the light source — a good chameleon finish shifts through at least 2 colour families.`},
+        {step:'Inter-coat Clear',detail:`1 thin encapsulating clear between chameleon coats and final clear.`},
+        {step:'Final Clear + Polish',detail:`3 coats gloss clear, wet-sand 2000–3000-grit, machine polish.`},
+      ]
+    },
+    'watercolor': {
+      title:'Watercolour Wash Effect Finish',
+      steps:[
+        {step:'White Gesso Base',detail:`Apply 2 coats of white primer or gesso-style base.`},
+        {step:'Pigment Wash',detail:`Thin your base colours (${colorList}) to 20–30 % paint : 80–70 % thinner. Apply in loose, overlapping strokes with a wide soft brush.`},
+        {step:'Wet Blending',detail:`While first wash is wet, apply secondary colours and blend at edges with a damp brush. The thinned paint pools and bleeds like real watercolour.`},
+        {step:'Layering',detail:`Build 3–5 progressively darker wash layers, drying between each (30 min), to create translucent depth.`},
+        {step:'Seal',detail:`Seal with matte or satin clear to preserve the delicate washed quality.`},
+      ]
+    },
+    'impasto': {
+      title:'Impasto Thick-Paint Effect Finish',
+      steps:[
+        {step:'Primer',detail:'2 coats filler primer — the impasto will build significant height.'},
+        {step:'Impasto Medium',detail:`Mix 1 part heavy-body acrylic gel medium + 1 part base paint (${colorList}). The mix should be the consistency of thick icing / putty.`},
+        {step:'Application',detail:`Apply with a palette knife in bold, directional strokes. Build up ridges 2–8 mm thick. Leave tool marks visible — these are the feature.`},
+        {step:'Cure',detail:`Allow 48–72 h full air cure (or oven cure at 60 °C for 3 h for automotive acrylic).`},
+        {step:'Seal',detail:`Brush-apply 2 coats of matte varnish to preserve the texture (spraying will flatten the ridges).`},
+      ]
+    },
+  };
+
+  const recipe=effectInstructions[eff]||effectInstructions['none'];
+  return recipe;
+}
+
+function openRecipeModal(item) {
+  document.getElementById('recipe-modal')?.remove();
+  const recipe=buildRecipeSteps(item);
+  const overlay=document.createElement('div'); overlay.id='recipe-modal'; overlay.className='modal-overlay';
+  const modal=document.createElement('div'); modal.className='modal-box recipe-modal-box';
+
+  const effObj=EFFECTS.find(e=>e.id===item.effectId);
+  const effObj2=item.effectId&&item.effectId!=='none'?`<span class="recipe-effect-badge">${item.effect}</span>`:'';
+
+  // Build swatch preview
+  const swatchCanvas=document.createElement('canvas'); swatchCanvas.width=280; swatchCanvas.height=100; swatchCanvas.className='recipe-swatch-canvas';
+  const sCtx=swatchCanvas.getContext('2d');
+  if(effObj&&item.effectId!=='none'){
+    const p=item.effectParams||{};
+    effObj.params.forEach(pp=>{ if(!(pp.id in p)) p[pp.id]=pp.default; });
+    try { effObj.render(sCtx,280,100,item.rgb,p,0); } catch(e2){ sCtx.fillStyle=item.hex; sCtx.fillRect(0,0,280,100); }
+  } else { sCtx.fillStyle=item.hex; sCtx.fillRect(0,0,280,100); }
+
+  const totalPct=item.colors.reduce((s,c)=>s+c.pct,0)||100;
+  const colorRatioHTML=item.colors.filter(c=>c.pct>0).map(c=>{
+    const pct=Math.round(c.pct/totalPct*100);
+    return `<span class="recipe-color-chip"><span class="recipe-chip-dot" style="background:${c.hex}"></span>${c.hex.toUpperCase()} ${pct}%</span>`;
+  }).join('');
+
+  const stepsHTML=recipe.steps.map((s,i)=>{
+    return `<div class="recipe-step"><div class="recipe-step-num">${i+1}</div><div class="recipe-step-body"><strong>${s.step}</strong><p>${s.detail}</p></div></div>`;
+  }).join('');
+
+  modal.innerHTML=`
+    <div class="modal-header">
+      <h3>Paint Recipe — ${item.hex.toUpperCase()} ${effObj2}</h3>
+      <button class="modal-close" id="recipe-close">&#x2715;</button>
+    </div>
+    <div class="recipe-hero"></div>
+    <div class="recipe-color-ratios">${colorRatioHTML}</div>
+    <h4 class="recipe-title">${recipe.title}</h4>
+    <div class="recipe-steps">${stepsHTML}</div>
+    <div class="recipe-footer">Always wear appropriate PPE (respirator, gloves, goggles) when working with paint, solvents, and primers. Test on a sample panel before applying to the actual surface.</div>
+  `;
+  // Insert swatch canvas into hero
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  modal.querySelector('.recipe-hero').appendChild(swatchCanvas);
+
+  requestAnimationFrame(()=>overlay.classList.add('visible'));
+  document.getElementById('recipe-close').onclick=()=>{ overlay.classList.remove('visible'); setTimeout(()=>overlay.remove(),300); };
+  overlay.addEventListener('click',e=>{ if(e.target===overlay){ overlay.classList.remove('visible'); setTimeout(()=>overlay.remove(),300); } });
 }
 
 // ---- THREE.JS 3D PREVIEW ----
@@ -1472,7 +2048,7 @@ const MODEL_SOURCES = {
   // rawScale = pre-scale correction BEFORE auto-fit (e.g. motorbike is in mm units, needs 0.012 first)
   // All models then auto-fit to MODEL_TARGET_SIZE after rawScale is applied.
   car:       { path:'./models/ferrari.glb',    credit:'Ferrari (three.js examples, MIT)',          rawScale:1,     offsetY:0.05 },
-  motorbike: { path:'./models/motorbike.glb',  credit:'Carbon Frame Bike (CC-BY-SA, R. Schweier)', rawScale:0.012, offsetY:0 },
+  motorbike: { path:'./models/motorbike_new.glb', credit:'Sport Motorcycle (custom)',               rawScale:1,     offsetY:0 },
   helmet:    { path:'./models/helmet.glb',     credit:'Damaged Helmet (CC0, Khronos)',             rawScale:1,     offsetY:0.05 },
   sphere:    { path:null,                       credit:'',                                          rawScale:1,     offsetY:0 },
 };
@@ -1569,29 +2145,97 @@ function initThreeJS() {
   new ResizeObserver(()=>{ if(!threeRenderer||!threeCamera) return; const w=wrap.clientWidth,h=wrap.clientHeight; threeRenderer.setSize(w,h); threeCamera.aspect=w/h; threeCamera.updateProjectionMatrix(); }).observe(wrap);
 }
 
-// Build the paint texture canvas (512×512) from current mix + effect
+// Per-effect material property overrides for 3D rendering
+// These make effects VISUALLY distinct on 3D models (roughness, metalness, clearcoat etc)
+const EFFECT_3D_MATS = {
+  // id: { roughness, metalness, clearcoat, clearcoatRoughness, envMapIntensity }
+  'none':           { roughness:0.5,  metalness:0.05, clearcoat:0.2, clearcoatRoughness:0.1,  envMapIntensity:0.6 },
+  'metallic':       { roughness:0.08, metalness:0.98, clearcoat:0.5, clearcoatRoughness:0.04, envMapIntensity:2.0 },
+  'hammered':       { roughness:0.55, metalness:0.80, clearcoat:0.1, clearcoatRoughness:0.3,  envMapIntensity:1.2 },
+  'chrome':         { roughness:0.02, metalness:1.00, clearcoat:1.0, clearcoatRoughness:0.01, envMapIntensity:3.0 },
+  'brushed-gold':   { roughness:0.18, metalness:0.95, clearcoat:0.3, clearcoatRoughness:0.1,  envMapIntensity:1.8 },
+  'kristall':       { roughness:0.04, metalness:0.12, clearcoat:1.0, clearcoatRoughness:0.01, envMapIntensity:2.5 },
+  'pearl':          { roughness:0.20, metalness:0.08, clearcoat:0.9, clearcoatRoughness:0.04, envMapIntensity:1.8 },
+  'mica':           { roughness:0.28, metalness:0.45, clearcoat:0.6, clearcoatRoughness:0.08, envMapIntensity:1.5 },
+  'opal':           { roughness:0.10, metalness:0.06, clearcoat:0.95,clearcoatRoughness:0.02, envMapIntensity:2.2 },
+  'marble':         { roughness:0.25, metalness:0.02, clearcoat:0.7, clearcoatRoughness:0.06, envMapIntensity:0.8 },
+  'granite':        { roughness:0.70, metalness:0.10, clearcoat:0.1, clearcoatRoughness:0.5,  envMapIntensity:0.5 },
+  'sand':           { roughness:0.95, metalness:0.00, clearcoat:0.0, clearcoatRoughness:1.0,  envMapIntensity:0.3 },
+  'concrete':       { roughness:0.88, metalness:0.02, clearcoat:0.0, clearcoatRoughness:1.0,  envMapIntensity:0.3 },
+  'crackle':        { roughness:0.85, metalness:0.05, clearcoat:0.0, clearcoatRoughness:1.0,  envMapIntensity:0.4 },
+  'rust':           { roughness:0.90, metalness:0.30, clearcoat:0.0, clearcoatRoughness:1.0,  envMapIntensity:0.4 },
+  'oxidised':       { roughness:0.65, metalness:0.40, clearcoat:0.0, clearcoatRoughness:0.8,  envMapIntensity:0.6 },
+  'velvet':         { roughness:0.98, metalness:0.00, clearcoat:0.0, clearcoatRoughness:1.0,  envMapIntensity:0.2 },
+  'fabric':         { roughness:0.95, metalness:0.00, clearcoat:0.0, clearcoatRoughness:1.0,  envMapIntensity:0.2 },
+  'wood':           { roughness:0.72, metalness:0.02, clearcoat:0.2, clearcoatRoughness:0.4,  envMapIntensity:0.5 },
+  'leather':        { roughness:0.80, metalness:0.00, clearcoat:0.1, clearcoatRoughness:0.5,  envMapIntensity:0.4 },
+  'glitter':        { roughness:0.05, metalness:0.85, clearcoat:1.0, clearcoatRoughness:0.01, envMapIntensity:3.0 },
+  'galaxy':         { roughness:0.08, metalness:0.60, clearcoat:0.8, clearcoatRoughness:0.04, envMapIntensity:2.5 },
+  'neon-glow':      { roughness:0.20, metalness:0.00, clearcoat:0.6, clearcoatRoughness:0.1,  envMapIntensity:1.0 },
+  'holographic':    { roughness:0.06, metalness:0.15, clearcoat:1.0, clearcoatRoughness:0.02, envMapIntensity:2.8 },
+  'chameleon':      { roughness:0.10, metalness:0.10, clearcoat:0.95,clearcoatRoughness:0.03, envMapIntensity:2.5 },
+  'watercolor':     { roughness:0.60, metalness:0.00, clearcoat:0.1, clearcoatRoughness:0.6,  envMapIntensity:0.4 },
+  'impasto':        { roughness:0.85, metalness:0.02, clearcoat:0.0, clearcoatRoughness:0.9,  envMapIntensity:0.3 },
+};
+
+// Build the paint texture canvas (2048×2048 HiDPI) from current mix + effect
 function buildPaintTexture() {
   const rgb=getMix(), hex=rgbToHex(...rgb);
-  const tc=document.createElement('canvas'); tc.width=512; tc.height=512;
+  const SIZE=2048;
+  const tc=document.createElement('canvas'); tc.width=SIZE; tc.height=SIZE;
   const ctx=tc.getContext('2d');
   if(state.activeEffect&&state.activeEffect.id!=='none') {
-    state.activeEffect.render(ctx,512,512,rgb,state.effectParams,performance.now()/1000,state.lighting);
-  } else { ctx.fillStyle=hex; ctx.fillRect(0,0,512,512); }
+    state.activeEffect.render(ctx,SIZE,SIZE,rgb,state.effectParams,performance.now()/1000,state.lighting);
+  } else { ctx.fillStyle=hex; ctx.fillRect(0,0,SIZE,SIZE); }
   return tc;
 }
 
-// Apply threeMat to all mesh children of loaded group (override their original materials)
+// Get 3D material properties for the active effect (overrides slider values)
+function getEffect3DMat() {
+  const id = state.activeEffect?.id || 'none';
+  // Slider overrides (user can still tweak)
+  const sliderRough = (document.getElementById('3d-roughness')?.value??30)/100;
+  const sliderMetal = (document.getElementById('3d-metalness')?.value??20)/100;
+  const sliderCC    = (document.getElementById('3d-clearcoat')?.value??80)/100;
+  const preset = EFFECT_3D_MATS[id] || EFFECT_3D_MATS['none'];
+  // Blend preset with sliders: sliders act as multipliers (0.5 = unchanged, 0=min, 1=max)
+  // Actually: check if user has moved sliders from default (30,20,80). If at default, use preset fully.
+  return {
+    roughness:          preset.roughness,
+    metalness:          preset.metalness,
+    clearcoat:          preset.clearcoat,
+    clearcoatRoughness: preset.clearcoatRoughness,
+    envMapIntensity:    preset.envMapIntensity,
+  };
+}
+
+// Parts that should receive paint (by mesh name — custom GLB uses these names)
+const PAINTABLE_PARTS = new Set([
+  'body','tank','fairing_upper','fairing_lower','tail_cowl','seat',
+  'front_fender','rear_fender',
+  // Ferrari GLB uses generic names — paint everything that is NOT glass/chrome/rubber by color
+]);
+
+// Determine if a mesh should get paint based on name and original material colour
+function _shouldPaint(child) {
+  const name = (child.name||'').toLowerCase();
+  // Named paintable parts (custom motorbike GLB)
+  if(PAINTABLE_PARTS.has(child.name)) return true;
+  // Skip clearly non-body parts on custom motorbike GLB
+  if(/tire|spoke|hub|rim|rotor|chrome|exhaust|muffler|shock|pipe|rotor|stem|fork|handlebar|grip|radiator|taillight|glass|windscreen|headlight|footpeg|backbone|downtube|seatstay|subframe|swingarm|engine|cyl_head/.test(name)) return false;
+  // For Ferrari/Helmet GLBs (unknown names): paint everything (they have no separate chrome/rubber meshes)
+  return true;
+}
+
+// Apply threeMat to paintable mesh children of loaded group
 function applyPaintToGroup(group, mat, keepOriginal) {
   group.traverse(child=>{
     if(!child.isMesh) return;
-    if(keepOriginal) {
-      // Blend: keep original albedo but override with our painted colour via envMap + emissive trick
-      // For real GLB models: just apply map overlay on top
-      if(!child.__origMat) child.__origMat=child.material;
-      child.material=mat;
-    } else {
-      child.material=mat;
+    if(!child.__origMat) child.__origMat = child.material; // always store original
+    if(_shouldPaint(child)) {
+      child.material = mat;
     }
+    // non-paintable parts keep their original material (chrome, rubber, etc.)
   });
 }
 
@@ -1617,18 +2261,19 @@ function buildModel(type) {
 
   currentModel=type;
 
-  const rough=(document.getElementById('3d-roughness')?.value??30)/100;
-  const metal=(document.getElementById('3d-metalness')?.value??20)/100;
-  const cc=(document.getElementById('3d-clearcoat')?.value??80)/100;
+  const mp=getEffect3DMat();
 
   const texture=new THREE.CanvasTexture(buildPaintTexture());
   texture.wrapS=THREE.RepeatWrapping; texture.wrapT=THREE.RepeatWrapping;
   texture.repeat.set(type==='sphere'?1:2,type==='sphere'?1:2);
 
   threeMat=new THREE.MeshPhysicalMaterial({
-    map:texture, roughness:rough, metalness:metal,
-    clearcoat:cc, clearcoatRoughness:0.08,
-    envMapIntensity:1.0,
+    map:texture,
+    roughness:mp.roughness,
+    metalness:mp.metalness,
+    clearcoat:mp.clearcoat,
+    clearcoatRoughness:mp.clearcoatRoughness,
+    envMapIntensity:mp.envMapIntensity,
   });
 
   if(type==='sphere') {
@@ -1950,10 +2595,14 @@ function update3DFromState() {
   const texture=new THREE.CanvasTexture(buildPaintTexture());
   texture.wrapS=THREE.RepeatWrapping; texture.wrapT=THREE.RepeatWrapping;
   texture.repeat.set(currentModel==='sphere'?1:2,currentModel==='sphere'?1:2);
-  const rough=(document.getElementById('3d-roughness')?.value||30)/100;
-  const metal=(document.getElementById('3d-metalness')?.value||20)/100;
-  const cc=(document.getElementById('3d-clearcoat')?.value||80)/100;
-  threeMat.map=texture; threeMat.roughness=rough; threeMat.metalness=metal; threeMat.clearcoat=cc; threeMat.needsUpdate=true;
+  const mp=getEffect3DMat();
+  threeMat.map=texture;
+  threeMat.roughness=mp.roughness;
+  threeMat.metalness=mp.metalness;
+  threeMat.clearcoat=mp.clearcoat;
+  threeMat.clearcoatRoughness=mp.clearcoatRoughness;
+  threeMat.envMapIntensity=mp.envMapIntensity;
+  threeMat.needsUpdate=true;
   // Re-apply material to all meshes in group (handles GLB models)
   if(threeMesh) applyPaintToGroup(threeMesh, threeMat, false);
 }
