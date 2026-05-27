@@ -27,7 +27,6 @@
       </a>
       <nav class="nav-pills">
         <button class="nav-pill active" data-section="mixer">Mixer</button>
-        <button class="nav-pill" data-section="effects">Effects</button>
         <button class="nav-pill" data-section="preview3d">3D Preview</button>
         <button class="nav-pill" data-section="palette">Saved</button>
       </nav>
@@ -39,31 +38,28 @@
 
   <main class="main">
 
-    <!-- ====== MIXER SECTION ====== -->
+    <!-- ====== MIXER + EFFECTS SECTION (merged) ====== -->
     <section class="section active" id="section-mixer">
-      <div class="section-title-row">
-        <h1 class="section-title">Color Mixer</h1>
-        <p class="section-subtitle">Add up to 8 pigments, adjust ratios, and see the blended result live.</p>
-      </div>
       <div class="mixer-layout">
-        <!-- Color Slots -->
+
+        <!-- LEFT: Color Slots -->
         <div class="color-slots-panel">
           <div class="panel-header">
             <span class="panel-label">Pigments</span>
             <button class="btn-add" id="btn-add-color">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              Add Color
+              Add
             </button>
           </div>
           <div class="color-slots" id="color-slots"></div>
           <div class="mixer-actions">
-            <button class="btn-secondary" id="btn-clear">Clear All</button>
-            <button class="btn-secondary" id="btn-random">Random Mix</button>
-            <button class="btn-secondary" id="btn-complement">Complementary</button>
+            <button class="btn-secondary" id="btn-clear">Clear</button>
+            <button class="btn-secondary" id="btn-random">Random</button>
+            <button class="btn-secondary" id="btn-complement">Complement</button>
           </div>
         </div>
 
-        <!-- Preview Panel -->
+        <!-- CENTER: Preview -->
         <div class="preview-panel">
           <div class="preview-toolbar">
             <span class="panel-label">Preview</span>
@@ -110,18 +106,17 @@
           </button>
         </div>
 
-        <!-- Active Effect + Params -->
+        <!-- RIGHT: Active Effect + Params -->
         <div class="effect-display-panel">
           <div class="panel-header">
             <span class="panel-label">Active Effect</span>
-            <button class="btn-text" id="btn-goto-effects">Change →</button>
           </div>
           <div class="active-effect-preview">
             <canvas id="effect-preview-canvas" aria-label="Effect preview"></canvas>
             <div class="effect-name-badge" id="effect-name-badge">No Effect</div>
           </div>
           <div class="effect-params" id="effect-params">
-            <p class="no-effect-hint">Select an effect from the Effects tab.</p>
+            <p class="no-effect-hint">Pick an effect below.</p>
           </div>
           <div class="light-controls" id="light-controls" style="display:none">
             <div class="panel-label" style="margin-bottom:0.5rem">Lighting</div>
@@ -139,27 +134,28 @@
             </div>
           </div>
         </div>
-      </div>
-    </section>
 
-    <!-- ====== EFFECTS SECTION ====== -->
-    <section class="section" id="section-effects">
-      <div class="section-title-row">
-        <h1 class="section-title">Special Effects</h1>
-        <p class="section-subtitle">26 professional paint finishes — click any card to apply.</p>
+      </div><!-- /mixer-layout -->
+
+      <!-- ====== EFFECTS PICKER (inline, full-width) ====== -->
+      <div class="effects-inline-panel">
+        <div class="effects-inline-header">
+          <span class="panel-label">Effects</span>
+          <div class="effects-filter" id="effects-filter">
+            <button class="filter-btn active" data-cat="All">All</button>
+            <button class="filter-btn" data-cat="Mineral">Mineral</button>
+            <button class="filter-btn" data-cat="Metal">Metal</button>
+            <button class="filter-btn" data-cat="Stone">Stone</button>
+            <button class="filter-btn" data-cat="Aged">Aged</button>
+            <button class="filter-btn" data-cat="Fabric">Fabric</button>
+            <button class="filter-btn" data-cat="Organic">Organic</button>
+            <button class="filter-btn" data-cat="Decorative">Decorative</button>
+            <button class="filter-btn" data-cat="Artistic">Artistic</button>
+          </div>
+        </div>
+        <div class="effects-chip-grid" id="effects-grid"></div>
       </div>
-      <div class="effects-filter" id="effects-filter">
-        <button class="filter-btn active" data-cat="All">All</button>
-        <button class="filter-btn" data-cat="Mineral">Mineral</button>
-        <button class="filter-btn" data-cat="Metal">Metal</button>
-        <button class="filter-btn" data-cat="Stone">Stone</button>
-        <button class="filter-btn" data-cat="Aged">Aged</button>
-        <button class="filter-btn" data-cat="Fabric">Fabric</button>
-        <button class="filter-btn" data-cat="Organic">Organic</button>
-        <button class="filter-btn" data-cat="Decorative">Decorative</button>
-        <button class="filter-btn" data-cat="Artistic">Artistic</button>
-      </div>
-      <div class="effects-grid" id="effects-grid"></div>
+
     </section>
 
     <!-- ====== 3D PREVIEW SECTION ====== -->

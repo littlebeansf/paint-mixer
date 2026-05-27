@@ -1078,11 +1078,9 @@ document.querySelectorAll('.nav-pill').forEach(pill => {
     pill.classList.add('active');
     const tgt=pill.dataset.section;
     document.querySelectorAll('.section').forEach(s=>s.classList.toggle('active',s.id===`section-${tgt}`));
-    if (tgt==='effects') buildEffectsGrid();
     if (tgt==='preview3d') { setTimeout(()=>{ initThreeJS(); update3DFromState(); },100); }
   });
 });
-document.getElementById('btn-goto-effects')?.addEventListener('click', ()=>document.querySelector('.nav-pill[data-section="effects"]')?.click());
 
 // ---- PREVIEW CANVAS (HiDPI) ----
 function getPreviewCanvas() { return document.getElementById('preview-canvas'); }
@@ -1194,6 +1192,11 @@ function renderPreview() {
     ctx.fillStyle=gr; ctx.fillRect(0,0,W,H);
   }
   updateColorMeta(rgb);
+  // Keep effect chip swatches in sync with current mix color (throttled via RAF)
+  if(!renderPreview._chipPending) {
+    renderPreview._chipPending=true;
+    requestAnimationFrame(()=>{ renderPreview._chipPending=false; refreshEffectChipSwatches(); });
+  }
 }
 
 function renderEffectPreview() {
@@ -1288,54 +1291,73 @@ function startLoop() {
   });
 });
 
-// ---- EFFECTS GRID ----
-let effectsBuilt=false;
+// ---- EFFECTS GRID (chip style, inline in mixer) ----
 function buildEffectsGrid() {
-  if(effectsBuilt) return;
-  effectsBuilt=true;
   const grid=document.getElementById('effects-grid');
+  if(!grid||grid.childElementCount>0) return; // already built
   EFFECTS.forEach((effect,idx)=>{
-    const card=document.createElement('button');
-    card.className='effect-card'; card.dataset.effectId=effect.id; card.dataset.cat=effect.category;
-    card.style.animationDelay=`${idx*25}ms`;
-    if(state.activeEffect?.id===effect.id) card.classList.add('selected');
-    // Build card body first, then append canvas AFTER (avoids innerHTML+ destroying canvas ref)
-    card.insertAdjacentHTML('beforeend',`<div class="effect-card-body"><div class="effect-card-name">${effect.name}</div><div class="effect-card-desc">${effect.desc}</div><span class="effect-card-badge">${effect.category}</span></div>`);
-    const canvas=document.createElement('canvas');
-    canvas.className='effect-card-canvas';
-    card.insertBefore(canvas,card.firstChild); // prepend canvas before body text
-    grid.appendChild(card);
-    // Render thumbnail: wait for layout with double RAF + stagger, then paint at HiDPI
-    function renderCardThumb() {
-      const rect=canvas.getBoundingClientRect();
-      const w=rect.width>4?rect.width:191;
+    const chip=document.createElement('button');
+    chip.className='effect-chip'; chip.dataset.effectId=effect.id; chip.dataset.cat=effect.category;
+    chip.style.animationDelay=`${idx*18}ms`;
+    if(state.activeEffect?.id===effect.id) chip.classList.add('selected');
+
+    // Small swatch canvas (48x48) + label
+    const swatch=document.createElement('canvas');
+    swatch.className='effect-chip-swatch'; swatch.width=96; swatch.height=96;
+    const chipLabel=document.createElement('span');
+    chipLabel.className='effect-chip-label'; chipLabel.textContent=effect.name;
+    const chipCat=document.createElement('span');
+    chipCat.className='effect-chip-cat'; chipCat.textContent=effect.category;
+    chip.appendChild(swatch);
+    chip.appendChild(chipLabel);
+    chip.appendChild(chipCat);
+    grid.appendChild(chip);
+
+    // Render swatch with double RAF for layout
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
       const dpr=window.devicePixelRatio||1;
-      canvas.width=Math.round(w*dpr); canvas.height=Math.round(w*0.6*dpr);
-      canvas.style.width='100%'; canvas.style.height='auto';
-      const tctx=canvas.getContext('2d'); tctx.scale(dpr,dpr);
+      const sz=48;
+      swatch.width=sz*dpr; swatch.height=sz*dpr;
+      const ctx=swatch.getContext('2d'); ctx.scale(dpr,dpr);
       const defParams={}; effect.params.forEach(p=>{ defParams[p.id]=p.default; });
-      try { effect.render(tctx,w,w*0.6,getMix(),defParams,0); } catch(e){}
-    }
-    // Stagger rendering to avoid layout jank: double RAF ensures card is in DOM and measured
-    requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>renderCardThumb(), idx*8)));
-    card.addEventListener('click',()=>selectEffect(effect,card));
+      try { effect.render(ctx,sz,sz,getMix(),defParams,0); } catch(e){
+        ctx.fillStyle=rgbToHex(...getMix()); ctx.fillRect(0,0,sz,sz);
+      }
+    }));
+
+    chip.addEventListener('click',()=>selectEffect(effect,chip));
   });
 
-  // Filter
+  // Filter buttons
   document.querySelectorAll('.filter-btn').forEach(btn=>{
     btn.addEventListener('click',()=>{
       document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
       const cat=btn.dataset.cat;
-      document.querySelectorAll('.effect-card').forEach(c=>{
+      document.querySelectorAll('.effect-chip').forEach(c=>{
         c.classList.toggle('hidden',cat!=='All'&&c.dataset.cat!==cat);
       });
     });
   });
 }
 
+// Refresh chip swatches when mix color changes (called from renderPreview)
+function refreshEffectChipSwatches() {
+  const mix=getMix();
+  document.querySelectorAll('.effect-chip').forEach(chip=>{
+    const effId=chip.dataset.effectId;
+    const effect=EFFECTS.find(e=>e.id===effId); if(!effect) return;
+    const swatch=chip.querySelector('.effect-chip-swatch'); if(!swatch) return;
+    const dpr=window.devicePixelRatio||1; const sz=48;
+    swatch.width=sz*dpr; swatch.height=sz*dpr;
+    const ctx=swatch.getContext('2d'); ctx.scale(dpr,dpr);
+    const defParams={}; effect.params.forEach(p=>{ defParams[p.id]=p.default; });
+    try { effect.render(ctx,sz,sz,mix,defParams,0); } catch(e){ ctx.fillStyle=rgbToHex(...mix); ctx.fillRect(0,0,sz,sz); }
+  });
+}
+
 function selectEffect(effect, card) {
-  document.querySelectorAll('.effect-card').forEach(c=>c.classList.remove('selected'));
+  document.querySelectorAll('.effect-chip,.effect-card').forEach(c=>c.classList.remove('selected'));
   card?.classList.add('selected');
   state.activeEffect=effect;
   state.effectParams={};
@@ -1345,8 +1367,7 @@ function selectEffect(effect, card) {
   const lc=document.getElementById('light-controls');
   if(lc) lc.style.display=effect.id!=='none'?'flex':'none';
   renderEffectPreview(); renderPreview(); update3DFromState();
-  showToast(`Effect: ${effect.name}`);
-  document.querySelector('.nav-pill[data-section="mixer"]')?.click();
+  if(effect.id!=='none') showToast(`Effect: ${effect.name}`);
 }
 
 function buildEffectParams(effect) {
@@ -2895,9 +2916,11 @@ function showToast(msg) {
 
 // ---- INIT ----
 buildColorSlots();
+// Build effects grid inline (no separate tab anymore)
+buildEffectsGrid();
+// Apply default effect (none) immediately — populates params panel
 const noneEffect=EFFECTS[0];
-state.activeEffect=noneEffect;
-state.effectParams={};
+selectEffect(noneEffect, document.querySelector('.effect-chip[data-effect-id="none"]'));
 renderPreview();
 renderEffectPreview();
 startLoop();
