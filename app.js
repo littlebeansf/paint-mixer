@@ -1443,8 +1443,8 @@ function openCompareModal(items) {
     </div>
     <div class="compare-model-selector">
       <span class="compare-model-label">Model:</span>
-      ${['car','torusknot','roundbox','helmet','sphere'].map(m=>{
-        const labels={car:'Car',torusknot:'Knot',roundbox:'Box',helmet:'Helmet',sphere:'Sphere'};
+      ${['car','torusknot','roundbox','helmet','sphere','duck','shaderball','rolex','gears','mug'].map(m=>{
+        const labels={car:'Car',torusknot:'Knot',roundbox:'Box',helmet:'Helmet',sphere:'Sphere',duck:'Duck',shaderball:'Ball',rolex:'Watch',gears:'Gears',mug:'Mug'};
         return `<button class="cmp-model-btn${m==='car'?' active':''}" data-model="${m}">${labels[m]||m}</button>`;
       }).join('')}
     </div>
@@ -1544,8 +1544,8 @@ function _renderCompareSingle(canvas, item, modelType) {
   } else { tCtx.fillStyle=item.hex; tCtx.fillRect(0,0,1024,1024); }
   const tex=new THREE.CanvasTexture(tc);
   tex.wrapS=THREE.RepeatWrapping; tex.wrapT=THREE.RepeatWrapping;
-  const isPrim = ['sphere','torusknot','roundbox'].includes(modelType);
-  tex.repeat.set(isPrim?1:2, isPrim?1:2);
+  // All models use 1,1 — GLBs have proper UVs, primitives likewise
+  tex.repeat.set(1, 1);
 
   const mp=EFFECT_3D_MATS[item.effectId]||EFFECT_3D_MATS['none'];
   const mat=new THREE.MeshPhysicalMaterial({
@@ -1694,7 +1694,57 @@ function renderSavedPalette() {
     infoDiv.querySelector('.palette-item-delete').addEventListener('click',e=>{ e.stopPropagation(); compareSelected.delete(item.id); state.savedPalette=state.savedPalette.filter(p=>p.id!==item.id); renderSavedPalette(); });
     grid.appendChild(el);
   });
+  // Update palette strip whenever saved palette changes
+  renderPaletteStrip();
 }
+
+// ---- PALETTE STRIP (sidebar quick-switch) ----
+function renderPaletteStrip() {
+  const list = document.getElementById('palette-strip-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!state.savedPalette.length) {
+    const empty = document.createElement('div');
+    empty.className = 'palette-strip-empty';
+    empty.textContent = 'Save a design to see it here';
+    list.appendChild(empty);
+    return;
+  }
+  state.savedPalette.forEach(item => {
+    const thumb = document.createElement('div');
+    thumb.className = 'palette-strip-thumb';
+    if (_activePaletteStripId === item.id) thumb.classList.add('active');
+    // Render 52×52 canvas swatch
+    const tc = document.createElement('canvas'); tc.width = 104; tc.height = 104;
+    const tCtx = tc.getContext('2d');
+    const effObj = EFFECTS.find(e => e.id === item.effectId);
+    if (effObj && item.effectId !== 'none') {
+      const p = item.effectParams || {};
+      effObj.params.forEach(pp => { if (!(pp.id in p)) p[pp.id] = pp.default; });
+      try { effObj.render(tCtx, 104, 104, item.rgb, p, 0); } catch(e) { tCtx.fillStyle = item.hex; tCtx.fillRect(0,0,104,104); }
+    } else { tCtx.fillStyle = item.hex; tCtx.fillRect(0,0,104,104); }
+    thumb.appendChild(tc);
+    // Tooltip label
+    const tip = document.createElement('span'); tip.className = 'palette-strip-thumb-tip';
+    const effName = item.effectId && item.effectId !== 'none' ? item.effect : 'Solid';
+    tip.textContent = effName.length > 8 ? effName.slice(0,7)+'…' : effName;
+    thumb.appendChild(tip);
+    thumb.title = `${item.hex.toUpperCase()} — ${effName}`;
+    thumb.addEventListener('click', () => {
+      _activePaletteStripId = item.id;
+      // Apply to 3D preview
+      testPaletteIn3D(item);
+      // Navigate to 3D tab if not already there
+      const tab3d = document.querySelector('.nav-pill[data-section="preview3d"]');
+      if (tab3d) tab3d.click();
+      // Update active states
+      list.querySelectorAll('.palette-strip-thumb').forEach(t => t.classList.remove('active'));
+      thumb.classList.add('active');
+    });
+    list.appendChild(thumb);
+  });
+}
+let _activePaletteStripId = null;
 
 // ---- RECIPE PANEL ----
 function buildRecipeSteps(item) {
@@ -2051,6 +2101,11 @@ const MODEL_CAM = {
   torusknot:  [0.20, 0.5,  4.0, 0.7,  0.8],
   roundbox:   [0.22, 0.5,  4.2, 0.7,  0.8],
   helmet:     [0.18, 0.5,  4.0, 0.5,  0.15],
+  duck:       [0.18, 0.4,  3.8, 0.5,  0.4],
+  shaderball: [0.18, 0.4,  4.0, 0.6,  0.3],
+  rolex:      [0.20, 0.4,  3.5, 0.5,  0.0],
+  gears:      [0.25, 0.5,  4.2, 0.6,  0.3],
+  mug:        [0.18, 0.4,  3.8, 0.5,  0.2],
   sphere:     [0.15, 0.5,  4.5, 0.9,  0.9],
 };
 
@@ -2058,22 +2113,32 @@ const MODEL_CAM = {
 // Per-model target sizes for auto-fit (when scale===1).
 // Increase for larger models that appear too small in the viewport.
 const MODEL_TARGET_SIZE = {
-  car:       3.2,
-  torusknot: 2.0,
-  roundbox:  2.0,
-  helmet:    1.5,
-  sphere:    2.2,
+  car:        3.2,
+  torusknot:  2.0,
+  roundbox:   2.0,
+  helmet:     1.5,
+  duck:       1.6,
+  shaderball: 1.8,
+  rolex:      1.4,
+  gears:      2.0,
+  mug:        1.5,
+  sphere:     2.2,
 };
 
 const MODEL_SOURCES = {
   // rawScale = pre-scale correction BEFORE auto-fit.
   // All models then auto-fit to MODEL_TARGET_SIZE after rawScale is applied.
-  car:       { path:'./models/ferrari.glb', credit:'Ferrari 458 (three.js examples, MIT)', rawScale:1, offsetY:0.05 },
-  helmet:    { path:'./models/helmet.glb',  credit:'Damaged Helmet (CC0, Khronos)',        rawScale:1, offsetY:0.05 },
-  // Geometric primitives — built procedurally, no GLB needed
-  torusknot: { path:null, credit:'', rawScale:1, offsetY:0 },
-  roundbox:  { path:null, credit:'', rawScale:1, offsetY:0 },
-  sphere:    { path:null, credit:'', rawScale:1, offsetY:0 },
+  car:        { path:'./models/ferrari.glb',    credit:'Ferrari 458 (three.js examples, MIT)',    rawScale:1, offsetY:0.05 },
+  helmet:     { path:'./models/helmet.glb',     credit:'Damaged Helmet (CC0, Khronos)',           rawScale:1, offsetY:0.05 },
+  duck:       { path:'./models/duck.glb',       credit:'Duck (three.js examples, CC0)',           rawScale:1, offsetY:0 },
+  shaderball: { path:'./models/shaderball.glb', credit:'Shader Ball (three.js examples, CC0)',    rawScale:1, offsetY:0 },
+  rolex:      { path:'./models/rolex.glb',      credit:'Watch case (three.js examples, CC0)',     rawScale:1, offsetY:0 },
+  gears:      { path:'./models/gears.glb',      credit:'Mechanical Gears (three.js examples, CC0)', rawScale:1, offsetY:0 },
+  mug:        { path:'./models/mug.glb',        credit:'Coffee Mug (three.js examples, CC0)',    rawScale:1, offsetY:0 },
+  // Geometric primitives — built procedurally
+  torusknot:  { path:null, credit:'', rawScale:1, offsetY:0 },
+  roundbox:   { path:null, credit:'', rawScale:1, offsetY:0 },
+  sphere:     { path:null, credit:'', rawScale:1, offsetY:0 },
 };
 
 // Cache loaded GLB scenes
@@ -2290,7 +2355,7 @@ function buildModel(type) {
   const PRIMITIVE_TYPES = new Set(['sphere','torusknot','roundbox']);
   const texture=new THREE.CanvasTexture(buildPaintTexture());
   texture.wrapS=THREE.RepeatWrapping; texture.wrapT=THREE.RepeatWrapping;
-  texture.repeat.set(PRIMITIVE_TYPES.has(type)?1:2, PRIMITIVE_TYPES.has(type)?1:2);
+  texture.repeat.set(1, 1); // All models: GLBs have proper UVs, primitives likewise
 
   threeMat=new THREE.MeshPhysicalMaterial({
     map:texture,
@@ -2707,8 +2772,8 @@ function startThreeLoop() {
         _liveTexture.image = paintCanvas;
         _liveTexture.needsUpdate = true;
       }
-      // Texture repeat based on model
-      const rpt = currentModel === 'sphere' ? 1 : 2;
+      // Texture repeat — GLBs have proper UVs so always use 1,1; primitives also 1,1
+      const rpt = 1;
       _liveTexture.repeat.set(rpt, rpt);
 
       // ── Derive normal map from canvas luminance ──
@@ -2723,7 +2788,7 @@ function startThreeLoop() {
           _liveNormalMap.image = normCanvas;
           _liveNormalMap.needsUpdate = true;
         }
-        _liveNormalMap.repeat.set(rpt, rpt);
+        _liveNormalMap.repeat.set(1, 1);
         threeMat.normalMap = _liveNormalMap;
         threeMat.normalScale = new THREE.Vector2(normStr, normStr);
       } else {
@@ -2836,6 +2901,7 @@ state.effectParams={};
 renderPreview();
 renderEffectPreview();
 startLoop();
+renderPaletteStrip(); // Init strip (empty state placeholder)
 
 // Re-render on resize for HiDPI correctness
 window.addEventListener('resize',()=>{ renderPreview(); renderEffectPreview(); });

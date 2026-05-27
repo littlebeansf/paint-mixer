@@ -179,6 +179,7 @@ h1,h2,h3{font-family:var(--font-display);line-height:1.1;font-weight:800}
 
 /* 3D PREVIEW */
 .preview3d-layout{display:grid;grid-template-columns:240px 1fr;gap:1.25rem;align-items:start}
+.preview-3d-wrap{display:flex;align-items:stretch;gap:0;min-width:0}
 @media(max-width:760px){.preview3d-layout{grid-template-columns:1fr}.preview3d-controls{display:grid;grid-template-columns:1fr 1fr;gap:1rem}}
 .preview3d-controls{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:1.1rem;box-shadow:var(--shadow-sm)}
 .model-selector,.env-selector{display:flex;flex-direction:column;gap:.35rem}
@@ -189,7 +190,7 @@ h1,h2,h3{font-family:var(--font-display);line-height:1.1;font-weight:800}
 .env-btn{padding:.3rem .6rem;font-size:var(--text-xs)}
 .view-controls{display:flex;flex-direction:column;gap:.65rem;margin-bottom:1rem}
 .view-action-btns{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}
-.preview3d-canvas-wrap{position:relative;border-radius:var(--radius-lg);overflow:hidden;background:#111;aspect-ratio:16/10;border:1px solid var(--color-border);box-shadow:var(--shadow-lg)}
+.preview3d-canvas-wrap{position:relative;border-radius:var(--radius-lg) 0 0 var(--radius-lg);overflow:hidden;background:#111;aspect-ratio:16/10;border:1px solid var(--color-border);border-right:none;box-shadow:var(--shadow-lg);flex:1;min-width:0}
 #three-canvas{width:100%;height:100%;display:block;cursor:grab}
 #three-canvas:active{cursor:grabbing}
 .canvas3d-hint{position:absolute;bottom:.75rem;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:.4rem;padding:.3rem .8rem;background:rgba(0,0,0,.55);color:rgba(255,255,255,.85);border-radius:var(--radius-full);font-size:var(--text-xs);font-weight:500;pointer-events:none;backdrop-filter:blur(6px);transition:opacity .5s;white-space:nowrap}
@@ -299,3 +300,18 @@ h1,h2,h3{font-family:var(--font-display);line-height:1.1;font-weight:800}
 .recipe-step-body p{font-size:var(--text-xs);color:var(--color-text-muted);line-height:1.5;margin:0}
 .recipe-effect-badge{display:inline-block;font-size:10px;font-weight:700;padding:.1rem .45rem;background:rgba(var(--color-primary-rgb,0,200,255),.15);color:var(--color-primary);border-radius:var(--radius-full);letter-spacing:.04em;text-transform:uppercase}
 .recipe-footer{padding:.7rem 1rem;font-size:10px;color:var(--color-text-faint,var(--color-text-muted));border-top:1px solid var(--color-border);flex-shrink:0;line-height:1.5}
+
+/* ---- PALETTE STRIP (right of 3D preview) ---- */
+.preview-3d-wrap{position:relative;display:flex;align-items:stretch;gap:0}
+.palette-strip{display:flex;flex-direction:column;align-items:center;gap:.35rem;width:64px;min-width:64px;max-height:520px;overflow-y:auto;overflow-x:hidden;padding:.45rem .3rem;background:var(--color-surface,#1a1a26);border:1px solid var(--color-border);border-left:none;border-radius:0 var(--radius-lg,0.75rem) var(--radius-lg,0.75rem) 0;scrollbar-width:thin;scrollbar-color:var(--color-border) transparent;flex-shrink:0}
+.palette-strip::-webkit-scrollbar{width:4px}
+.palette-strip::-webkit-scrollbar-thumb{background:var(--color-border);border-radius:2px}
+.palette-strip-label{font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--color-text-muted);margin-bottom:.1rem;text-align:center;flex-shrink:0}
+.palette-strip-list{display:flex;flex-direction:column;align-items:center;gap:.35rem;width:100%}
+.palette-strip-thumb{width:52px;height:52px;border-radius:var(--radius-md,0.5rem);overflow:hidden;cursor:pointer;border:2px solid transparent;transition:border-color .2s,transform .15s,box-shadow .2s;flex-shrink:0;position:relative;background:#111}
+.palette-strip-thumb canvas{display:block;width:100%;height:100%}
+.palette-strip-thumb:hover{border-color:var(--color-primary);transform:scale(1.06);box-shadow:0 0 0 3px rgba(var(--color-primary-rgb,0,200,255),.25)}
+.palette-strip-thumb.active{border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(var(--color-primary-rgb,0,200,255),.35)}
+.palette-strip-thumb-tip{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.6);font-size:8px;font-weight:700;color:#fff;text-align:center;padding:2px 0;letter-spacing:.04em;text-transform:uppercase;pointer-events:none;opacity:0;transition:opacity .15s}
+.palette-strip-thumb:hover .palette-strip-thumb-tip{opacity:1}
+.palette-strip-empty{font-size:9px;color:var(--color-text-faint,var(--color-text-muted));text-align:center;padding:.5rem .25rem;opacity:.6;line-height:1.4}
