@@ -1,30 +1,53 @@
 /* ====================================================
-   PAINT MIXER — app.js
-   Core: color mixing engine, effects rendering,
-   UI logic, palette persistence.
+   PAINT MIXER v2 — app.js
+   - HiDPI canvas (devicePixelRatio scaling everywhere)
+   - 26 effects with rich params + lighting controls
+   - Three.js 3D vehicle preview (car, motorbike, helmet, sphere)
+   - Category filter, zoom, download, complementary mix
    ==================================================== */
-
 'use strict';
 
-// ---- DARK MODE TOGGLE ----
+// ---- HIDPI CANVAS HELPER ----
+function setupHiDPICanvas(canvas, cssWidth, cssHeight) {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return ctx;
+}
+
+function resizeHiDPICanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  if (!w || !h) return null;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.resetTransform();
+  ctx.scale(dpr, dpr);
+  return ctx;
+}
+
+// ---- DARK MODE ----
 (function () {
   const toggle = document.querySelector('[data-theme-toggle]');
   const root = document.documentElement;
-  let theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  let theme = matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light';
   root.setAttribute('data-theme', theme);
-  updateToggleIcon(toggle, theme);
-
+  updateIcon(toggle, theme);
   toggle && toggle.addEventListener('click', () => {
     theme = theme === 'dark' ? 'light' : 'dark';
     root.setAttribute('data-theme', theme);
-    updateToggleIcon(toggle, theme);
-    setTimeout(() => {
-      renderPreview();
-      renderEffectPreview();
-    }, 50);
+    updateIcon(toggle, theme);
+    setTimeout(() => { renderPreview(); renderEffectPreview(); }, 60);
   });
-
-  function updateToggleIcon(btn, t) {
+  function updateIcon(btn, t) {
     if (!btn) return;
     btn.innerHTML = t === 'dark'
       ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`
@@ -34,1364 +57,1668 @@
 
 // ---- STATE ----
 const state = {
-  colors: [
-    { id: uid(), hex: '#e85050', pct: 50 },
-    { id: uid(), hex: '#4c8ce0', pct: 50 },
-  ],
+  colors: [{ id: uid(), hex: '#e85050', pct: 50 }, { id: uid(), hex: '#4c8ce0', pct: 50 }],
   activeEffect: null,
   effectParams: {},
+  lighting: { angle: 45, intensity: 75, ambient: 40 },
   savedPalette: [],
+  zoom: 1,
   animFrame: null,
-  effectAnimFrame: null,
 };
-
-function uid() {
-  return Math.random().toString(36).slice(2, 9);
-}
+function uid() { return Math.random().toString(36).slice(2, 9); }
 
 // ---- COLOR MATH ----
 function hexToRgb(hex) {
   const h = hex.replace('#', '');
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return [r, g, b];
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
 }
-
 function rgbToHex(r, g, b) {
-  return '#' + [r, g, b].map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
+  return '#' + [r,g,b].map(v => Math.round(Math.max(0,Math.min(255,v))).toString(16).padStart(2,'0')).join('');
 }
-
 function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h, s, l = (max + min) / 2;
-  if (max === min) { h = s = 0; }
-  else {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-      case g: h = ((b - r) / d + 2) / 6; break;
-      case b: h = ((r - g) / d + 4) / 6; break;
-    }
+  r/=255; g/=255; b/=255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b);
+  let h, s, l=(max+min)/2;
+  if (max===min) { h=s=0; } else {
+    const d=max-min;
+    s=l>0.5?d/(2-max-min):d/(max+min);
+    switch(max){case r:h=((g-b)/d+(g<b?6:0))/6;break;case g:h=((b-r)/d+2)/6;break;case b:h=((r-g)/d+4)/6;break;}
   }
-  return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)];
+  return [Math.round(h*360), Math.round(s*100), Math.round(l*100)];
 }
-
-// Mix colors in linear RGB with weighted average
-function mixColors(colorList) {
-  if (!colorList.length) return [255, 255, 255];
-  let total = colorList.reduce((s, c) => s + c.pct, 0);
-  if (total === 0) total = 1;
-  let r = 0, g = 0, b = 0;
-  for (const c of colorList) {
-    const [cr, cg, cb] = hexToRgb(c.hex);
-    const w = c.pct / total;
-    // Convert to linear before mixing (physically accurate)
-    r += Math.pow(cr / 255, 2.2) * w;
-    g += Math.pow(cg / 255, 2.2) * w;
-    b += Math.pow(cb / 255, 2.2) * w;
+function mixColors(list) {
+  if (!list.length) return [255,255,255];
+  let total=list.reduce((s,c)=>s+c.pct,0)||1;
+  let r=0,g=0,b=0;
+  for (const c of list) {
+    const [cr,cg,cb]=hexToRgb(c.hex), w=c.pct/total;
+    r+=Math.pow(cr/255,2.2)*w; g+=Math.pow(cg/255,2.2)*w; b+=Math.pow(cb/255,2.2)*w;
   }
-  return [
-    Math.round(Math.pow(r, 1 / 2.2) * 255),
-    Math.round(Math.pow(g, 1 / 2.2) * 255),
-    Math.round(Math.pow(b, 1 / 2.2) * 255),
-  ];
+  return [Math.round(Math.pow(r,1/2.2)*255), Math.round(Math.pow(g,1/2.2)*255), Math.round(Math.pow(b,1/2.2)*255)];
+}
+function getMix() { return mixColors(state.colors); }
+function complementHex(hex) {
+  const [r,g,b]=hexToRgb(hex);
+  return rgbToHex(255-r,255-g,255-b);
 }
 
-function getMixedColor() {
-  return mixColors(state.colors);
+// ---- SEEDED RANDOM ----
+function seededRand(seed) {
+  let s=seed^0x9e3779b9;
+  return function(){
+    s=Math.imul(s^(s>>>16),0x45d9f3b);
+    s=Math.imul(s^(s>>>16),0x45d9f3b);
+    s=s^(s>>>16);
+    return(s>>>0)/0xffffffff;
+  };
 }
 
-// ---- EFFECTS DEFINITIONS ----
+// ==============================================================
+// EFFECTS — 26 total
+// Each render(ctx, W, H, rgb, params, t, lighting) where
+//   W/H are the CSS dimensions (ctx is already DPI-scaled)
+// ==============================================================
+
 const EFFECTS = [
+  // ---- BASE ----
   {
-    id: 'none',
-    name: 'No Effect',
-    category: 'Base',
-    desc: 'Flat matte coat, no special finish.',
-    params: [],
-    render: (ctx, w, h, rgb) => {
-      ctx.fillStyle = rgbToHex(...rgb);
-      ctx.fillRect(0, 0, w, h);
-    },
+    id:'none', name:'No Effect', category:'Base', desc:'Flat matte coat.',
+    params:[],
+    render(ctx,W,H,rgb){ctx.fillStyle=rgbToHex(...rgb);ctx.fillRect(0,0,W,H);},
   },
+
+  // ---- MINERAL ----
   {
-    id: 'kristall',
-    name: 'Kristall Effekt',
-    category: 'Mineral',
-    desc: 'Faceted crystal growths sparkle over the base color like ice or gemstones.',
-    params: [
-      { id: 'density', label: 'Crystal Density', min: 1, max: 100, default: 50 },
-      { id: 'shimmer', label: 'Shimmer Intensity', min: 0, max: 100, default: 70 },
+    id:'kristall', name:'Kristall Effekt', category:'Mineral',
+    desc:'Faceted crystal growths sparkle like ice or gemstones.',
+    params:[
+      {id:'density',label:'Crystal Density',min:1,max:100,default:50},
+      {id:'shimmer',label:'Shimmer Intensity',min:0,max:100,default:70},
+      {id:'size',label:'Crystal Size',min:5,max:60,default:20},
+      {id:'color_tint',label:'Tint Color',type:'color',default:'#ffffff'},
     ],
     render: renderKristall,
   },
   {
-    id: 'marble',
-    name: 'Marble',
-    category: 'Stone',
-    desc: 'Elegant veined marble with deep swirls and translucent depth.',
-    params: [
-      { id: 'veins', label: 'Vein Count', min: 2, max: 20, default: 6 },
-      { id: 'contrast', label: 'Contrast', min: 10, max: 100, default: 60 },
-    ],
-    render: renderMarble,
-  },
-  {
-    id: 'metallic',
-    name: 'Metallic',
-    category: 'Metal',
-    desc: 'High-gloss metallic with directional brushed sheen.',
-    params: [
-      { id: 'gloss', label: 'Gloss Level', min: 10, max: 100, default: 75 },
-      { id: 'grain', label: 'Grain Direction', min: 0, max: 180, default: 45 },
-    ],
-    render: renderMetallic,
-  },
-  {
-    id: 'pearl',
-    name: 'Pearl / Nacre',
-    category: 'Mineral',
-    desc: 'Iridescent pearlescent shimmer, shifts color at different angles.',
-    params: [
-      { id: 'iridescence', label: 'Iridescence', min: 10, max: 100, default: 60 },
-      { id: 'layers', label: 'Pearl Layers', min: 1, max: 10, default: 4 },
+    id:'pearl', name:'Pearl / Nacre', category:'Mineral',
+    desc:'Iridescent pearlescent shimmer shifts colour at different angles.',
+    params:[
+      {id:'iridescence',label:'Iridescence',min:10,max:100,default:60},
+      {id:'layers',label:'Pearl Layers',min:1,max:12,default:4},
+      {id:'sheen_speed',label:'Sheen Speed',min:1,max:100,default:40},
     ],
     render: renderPearl,
   },
   {
-    id: 'crackle',
-    name: 'Crackle / Craquelure',
-    category: 'Aged',
-    desc: 'Aged, weathered crackled surface — ceramic or vintage leather look.',
-    params: [
-      { id: 'crack_size', label: 'Crack Width', min: 1, max: 30, default: 10 },
-      { id: 'depth', label: 'Crack Depth', min: 10, max: 100, default: 55 },
-    ],
-    render: renderCrackle,
-  },
-  {
-    id: 'velvet',
-    name: 'Velvet / Suede',
-    category: 'Fabric',
-    desc: 'Soft velvety finish with micro-fibre depth and warm shading.',
-    params: [
-      { id: 'softness', label: 'Pile Softness', min: 10, max: 100, default: 65 },
-      { id: 'direction', label: 'Nap Direction', min: 0, max: 180, default: 90 },
-    ],
-    render: renderVelvet,
-  },
-  {
-    id: 'stone',
-    name: 'Stone Texture',
-    category: 'Stone',
-    desc: 'Granite-like granular surface with speckled mineral inclusions.',
-    params: [
-      { id: 'grain_size', label: 'Grain Size', min: 1, max: 20, default: 5 },
-      { id: 'contrast', label: 'Speckle Contrast', min: 10, max: 100, default: 50 },
-    ],
-    render: renderStone,
-  },
-  {
-    id: 'glitter',
-    name: 'Glitter',
-    category: 'Decorative',
-    desc: 'Sparkling glitter particles embedded in the paint base.',
-    params: [
-      { id: 'density', label: 'Particle Density', min: 10, max: 200, default: 80 },
-      { id: 'size', label: 'Particle Size', min: 1, max: 8, default: 3 },
-    ],
-    render: renderGlitter,
-  },
-  {
-    id: 'hammered',
-    name: 'Hammered Metal',
-    category: 'Metal',
-    desc: 'Dimpled hammered surface with directional reflections.',
-    params: [
-      { id: 'dimple_size', label: 'Dimple Size', min: 5, max: 40, default: 16 },
-      { id: 'relief', label: 'Relief Depth', min: 10, max: 100, default: 60 },
-    ],
-    render: renderHammered,
-  },
-  {
-    id: 'sand',
-    name: 'Sand Texture',
-    category: 'Stone',
-    desc: 'Fine sandy grit — coastal or desert feel.',
-    params: [
-      { id: 'coarseness', label: 'Coarseness', min: 1, max: 20, default: 4 },
-      { id: 'depth', label: 'Depth', min: 10, max: 100, default: 45 },
-    ],
-    render: renderSand,
-  },
-  {
-    id: 'wood',
-    name: 'Wood Grain',
-    category: 'Organic',
-    desc: 'Realistic flowing wood grain rings and fibre texture.',
-    params: [
-      { id: 'grain_freq', label: 'Ring Frequency', min: 2, max: 30, default: 10 },
-      { id: 'wave', label: 'Grain Wave', min: 0, max: 100, default: 40 },
-    ],
-    render: renderWood,
-  },
-  {
-    id: 'rust',
-    name: 'Rust & Patina',
-    category: 'Aged',
-    desc: 'Organic oxidation and patina — industrial aged character.',
-    params: [
-      { id: 'coverage', label: 'Rust Coverage', min: 5, max: 100, default: 50 },
-      { id: 'texture', label: 'Texture Roughness', min: 10, max: 100, default: 60 },
-    ],
-    render: renderRust,
-  },
-  {
-    id: 'mica',
-    name: 'Mica / Mineral Flake',
-    category: 'Mineral',
-    desc: 'Mica flakes catch the light with scattered flat reflections.',
-    params: [
-      { id: 'flake_density', label: 'Flake Density', min: 5, max: 150, default: 50 },
-      { id: 'flake_size', label: 'Flake Size', min: 2, max: 20, default: 8 },
+    id:'mica', name:'Mica / Mineral Flake', category:'Mineral',
+    desc:'Flat mica flakes scatter light with directional reflections.',
+    params:[
+      {id:'flake_density',label:'Flake Density',min:5,max:200,default:60},
+      {id:'flake_size',label:'Flake Size',min:2,max:25,default:8},
+      {id:'color_tint',label:'Flake Tint',type:'color',default:'#c8d8ff'},
     ],
     render: renderMica,
   },
   {
-    id: 'galaxy',
-    name: 'Galaxy / Nebula',
-    category: 'Decorative',
-    desc: 'Deep cosmic nebula swirl — pigments dissolve into interstellar clouds.',
-    params: [
-      { id: 'stars', label: 'Star Count', min: 10, max: 300, default: 120 },
-      { id: 'nebula', label: 'Nebula Density', min: 10, max: 100, default: 55 },
+    id:'opal', name:'Opal / Fire Opal', category:'Mineral',
+    desc:'Internal fire and spectral play-of-colour like precious opal.',
+    params:[
+      {id:'fire_intensity',label:'Fire Intensity',min:10,max:100,default:70},
+      {id:'patch_scale',label:'Patch Scale',min:5,max:60,default:20},
+      {id:'translucency',label:'Translucency',min:0,max:100,default:50},
+    ],
+    render: renderOpal,
+  },
+
+  // ---- METAL ----
+  {
+    id:'metallic', name:'Metallic', category:'Metal',
+    desc:'High-gloss metallic with directional brushed sheen.',
+    params:[
+      {id:'gloss',label:'Gloss Level',min:10,max:100,default:75},
+      {id:'grain',label:'Brush Direction',min:0,max:180,default:45},
+      {id:'reflectivity',label:'Reflectivity',min:0,max:100,default:60},
+    ],
+    render: renderMetallic,
+  },
+  {
+    id:'hammered', name:'Hammered Metal', category:'Metal',
+    desc:'Dimpled hammered surface with directional reflections.',
+    params:[
+      {id:'dimple_size',label:'Dimple Size',min:4,max:50,default:16},
+      {id:'relief',label:'Relief Depth',min:10,max:100,default:60},
+      {id:'gloss',label:'Gloss',min:0,max:100,default:70},
+    ],
+    render: renderHammered,
+  },
+  {
+    id:'chrome', name:'Chrome / Mirror', category:'Metal',
+    desc:'Perfect mirror-like chrome finish with environment reflections.',
+    params:[
+      {id:'sharpness',label:'Reflection Sharpness',min:10,max:100,default:85},
+      {id:'tint',label:'Colour Tint Strength',min:0,max:100,default:30},
+      {id:'scratch',label:'Scratch Depth',min:0,max:100,default:10},
+    ],
+    render: renderChrome,
+  },
+  {
+    id:'brushed_gold', name:'Brushed Gold', category:'Metal',
+    desc:'Warm radial-brushed gold with anisotropic highlights.',
+    params:[
+      {id:'gold_tone',label:'Gold Warmth',min:0,max:100,default:60},
+      {id:'brush_density',label:'Brush Density',min:10,max:100,default:50},
+      {id:'shine',label:'Highlight Shine',min:0,max:100,default:75},
+    ],
+    render: renderBrushedGold,
+  },
+
+  // ---- STONE ----
+  {
+    id:'marble', name:'Marble', category:'Stone',
+    desc:'Elegant veined marble with deep translucent swirls.',
+    params:[
+      {id:'veins',label:'Vein Count',min:2,max:24,default:6},
+      {id:'contrast',label:'Vein Contrast',min:10,max:100,default:60},
+      {id:'vein_color',label:'Vein Colour',type:'color',default:'#ffffff'},
+      {id:'scale',label:'Pattern Scale',min:20,max:200,default:100},
+    ],
+    render: renderMarble,
+  },
+  {
+    id:'stone', name:'Granite / Stone', category:'Stone',
+    desc:'Granite-like granular surface with mineral speckles.',
+    params:[
+      {id:'grain_size',label:'Grain Size',min:1,max:20,default:5},
+      {id:'contrast',label:'Speckle Contrast',min:10,max:100,default:50},
+      {id:'color2',label:'Second Mineral',type:'color',default:'#888888'},
+    ],
+    render: renderStone,
+  },
+  {
+    id:'sand', name:'Sand / Stucco', category:'Stone',
+    desc:'Fine sandy grit — coastal or textured plaster feel.',
+    params:[
+      {id:'coarseness',label:'Coarseness',min:1,max:20,default:4},
+      {id:'depth',label:'Depth',min:10,max:100,default:45},
+      {id:'direction',label:'Grain Direction',min:0,max:180,default:0},
+    ],
+    render: renderSand,
+  },
+  {
+    id:'concrete', name:'Concrete / Cement', category:'Stone',
+    desc:'Raw exposed concrete with subtle form-liner texture.',
+    params:[
+      {id:'roughness',label:'Surface Roughness',min:5,max:100,default:45},
+      {id:'stain',label:'Stain/Patina',min:0,max:100,default:25},
+      {id:'aggregate',label:'Aggregate Show',min:0,max:100,default:30},
+    ],
+    render: renderConcrete,
+  },
+
+  // ---- AGED ----
+  {
+    id:'crackle', name:'Crackle / Craquelure', category:'Aged',
+    desc:'Ceramic craquelure — aged and weathered surface cracks.',
+    params:[
+      {id:'crack_size',label:'Crack Width',min:1,max:40,default:12},
+      {id:'depth',label:'Crack Depth',min:10,max:100,default:55},
+      {id:'crack_color',label:'Crack Colour',type:'color',default:'#1a0a00'},
+    ],
+    render: renderCrackle,
+  },
+  {
+    id:'rust', name:'Rust & Patina', category:'Aged',
+    desc:'Organic oxidation — industrial aged character.',
+    params:[
+      {id:'coverage',label:'Rust Coverage',min:5,max:100,default:50},
+      {id:'texture',label:'Texture Roughness',min:10,max:100,default:60},
+      {id:'patina_color',label:'Patina Colour',type:'color',default:'#c84010'},
+    ],
+    render: renderRust,
+  },
+  {
+    id:'oxidized', name:'Oxidised Copper', category:'Aged',
+    desc:'Green-blue verdigris patina — aged copper or bronze.',
+    params:[
+      {id:'patina',label:'Patina Coverage',min:5,max:100,default:55},
+      {id:'roughness',label:'Surface Roughness',min:10,max:100,default:60},
+      {id:'depth',label:'Layer Depth',min:0,max:100,default:50},
+    ],
+    render: renderOxidized,
+  },
+
+  // ---- FABRIC ----
+  {
+    id:'velvet', name:'Velvet / Suede', category:'Fabric',
+    desc:'Soft velvety finish with micro-fibre depth and shading.',
+    params:[
+      {id:'softness',label:'Pile Softness',min:10,max:100,default:65},
+      {id:'direction',label:'Nap Direction',min:0,max:180,default:90},
+      {id:'sheen',label:'Schiller Sheen',min:0,max:100,default:40},
+    ],
+    render: renderVelvet,
+  },
+  {
+    id:'fabric_weave', name:'Fabric Weave', category:'Fabric',
+    desc:'Visible woven textile structure — linen, canvas, or silk.',
+    params:[
+      {id:'weave_size',label:'Weave Scale',min:2,max:20,default:6},
+      {id:'contrast',label:'Thread Contrast',min:10,max:100,default:50},
+      {id:'weave_type',label:'Weave Pattern',type:'select',options:['Plain','Twill','Satin'],default:'Plain'},
+    ],
+    render: renderFabricWeave,
+  },
+
+  // ---- ORGANIC ----
+  {
+    id:'wood', name:'Wood Grain', category:'Organic',
+    desc:'Flowing wood grain rings and fibre texture.',
+    params:[
+      {id:'grain_freq',label:'Ring Frequency',min:2,max:30,default:10},
+      {id:'wave',label:'Grain Wave',min:0,max:100,default:40},
+      {id:'knots',label:'Knot Count',min:0,max:5,default:1},
+    ],
+    render: renderWood,
+  },
+  {
+    id:'leather', name:'Leather / Pebble', category:'Organic',
+    desc:'Pebbled leather grain — luxury automotive or upholstery finish.',
+    params:[
+      {id:'pebble_size',label:'Pebble Size',min:3,max:25,default:8},
+      {id:'depth',label:'Emboss Depth',min:10,max:100,default:55},
+      {id:'gloss',label:'Finish Gloss',min:0,max:100,default:40},
+    ],
+    render: renderLeather,
+  },
+
+  // ---- DECORATIVE ----
+  {
+    id:'glitter', name:'Glitter', category:'Decorative',
+    desc:'Sparkling glitter particles embedded in the paint base.',
+    params:[
+      {id:'density',label:'Particle Density',min:10,max:250,default:90},
+      {id:'size',label:'Particle Size',min:1,max:10,default:3},
+      {id:'color_tint',label:'Glitter Tint',type:'color',default:'#ffffff'},
+      {id:'rainbow',label:'Rainbow Mode',min:0,max:100,default:50},
+    ],
+    render: renderGlitter,
+  },
+  {
+    id:'galaxy', name:'Galaxy / Nebula', category:'Decorative',
+    desc:'Deep cosmic nebula swirl — pigments dissolve into interstellar clouds.',
+    params:[
+      {id:'stars',label:'Star Count',min:10,max:400,default:150},
+      {id:'nebula',label:'Nebula Density',min:10,max:100,default:55},
+      {id:'rotation',label:'Spiral Rotation',min:0,max:100,default:40},
     ],
     render: renderGalaxy,
   },
   {
-    id: 'watercolor',
-    name: 'Watercolor Wash',
-    category: 'Artistic',
-    desc: 'Translucent soft wash edges and blooms like watercolor on wet paper.',
-    params: [
-      { id: 'wetness', label: 'Wetness / Bloom', min: 10, max: 100, default: 60 },
-      { id: 'layers', label: 'Wash Layers', min: 1, max: 8, default: 3 },
+    id:'neon_glow', name:'Neon Glow', category:'Decorative',
+    desc:'Electric neon paint with intense edge glow and bloom.',
+    params:[
+      {id:'glow_size',label:'Glow Radius',min:2,max:60,default:20},
+      {id:'intensity',label:'Glow Intensity',min:10,max:100,default:75},
+      {id:'pulse',label:'Pulse Speed',min:0,max:100,default:50},
+    ],
+    render: renderNeonGlow,
+  },
+  {
+    id:'holographic', name:'Holographic', category:'Decorative',
+    desc:'Holographic foil with full spectrum colour shifts and prismatic patterns.',
+    params:[
+      {id:'intensity',label:'Hologram Intensity',min:10,max:100,default:70},
+      {id:'scale',label:'Pattern Scale',min:5,max:80,default:25},
+      {id:'speed',label:'Shift Speed',min:0,max:100,default:40},
+    ],
+    render: renderHolographic,
+  },
+  {
+    id:'chameleon', name:'Chameleon / Flip', category:'Decorative',
+    desc:'Angle-dependent colour flip coating — dual-tone or multi-tone shift.',
+    params:[
+      {id:'color2',label:'Flip Colour',type:'color',default:'#00d4aa'},
+      {id:'sharpness',label:'Flip Sharpness',min:1,max:100,default:50},
+      {id:'angle_bias',label:'View Angle',min:0,max:180,default:60},
+    ],
+    render: renderChameleon,
+  },
+
+  // ---- ARTISTIC ----
+  {
+    id:'watercolor', name:'Watercolor Wash', category:'Artistic',
+    desc:'Translucent soft wash edges and blooms on paper.',
+    params:[
+      {id:'wetness',label:'Wetness / Bloom',min:10,max:100,default:60},
+      {id:'layers',label:'Wash Layers',min:1,max:8,default:3},
+      {id:'granulation',label:'Granulation',min:0,max:100,default:40},
     ],
     render: renderWatercolor,
   },
+  {
+    id:'impasto', name:'Impasto / Palette Knife', category:'Artistic',
+    desc:'Thick textured oil paint applied with a palette knife.',
+    params:[
+      {id:'thickness',label:'Paint Thickness',min:5,max:100,default:60},
+      {id:'stroke_size',label:'Stroke Scale',min:10,max:100,default:45},
+      {id:'direction',label:'Stroke Angle',min:0,max:180,default:30},
+    ],
+    render: renderImpasto,
+  },
 ];
 
-// ---- EFFECT RENDERERS ----
+// ==============================================================
+// EFFECT RENDERERS
+// ctx is a 2D context already scaled to device pixel ratio.
+// W, H are the CSS (logical) pixel dimensions.
+// ==============================================================
 
-// Seeded pseudo-random for deterministic renders
-function seededRand(seed) {
-  let s = seed ^ 0x9e3779b9;
-  return function () {
-    s = Math.imul(s ^ (s >>> 16), 0x45d9f3b);
-    s = Math.imul(s ^ (s >>> 16), 0x45d9f3b);
-    s = s ^ (s >>> 16);
-    return (s >>> 0) / 0xffffffff;
-  };
-}
-
-function renderKristall(ctx, w, h, rgb, params, t = 0) {
-  const density = (params.density || 50) / 100;
-  const shimmer = (params.shimmer || 70) / 100;
-  const [r, g, b] = rgb;
-  const rand = seededRand(42);
-
-  // Background
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  // Crystal facets
-  const numCrystals = Math.floor(density * 60) + 8;
-  for (let i = 0; i < numCrystals; i++) {
-    const cx = rand() * w;
-    const cy = rand() * h;
-    const size = rand() * 30 + 10;
-    const sides = Math.floor(rand() * 3) + 4; // 4-6 sides
-    const rotation = rand() * Math.PI * 2 + t * 0.3;
-    const alpha = (rand() * 0.5 + 0.3) * shimmer;
-    const brightness = rand() * 100 + 130;
-
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(rotation);
-
-    // Facet base
+function renderKristall(ctx, W, H, rgb, params, t=0) {
+  const density=(params.density||50)/100, shimmer=(params.shimmer||70)/100;
+  const crystalSize=params.size||20;
+  const tintRgb=hexToRgb(params.color_tint||'#ffffff');
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(42);
+  const num=Math.floor(density*70)+6;
+  for (let i=0;i<num;i++) {
+    const cx=rand()*W, cy=rand()*H;
+    const sz=rand()*crystalSize+crystalSize*0.3;
+    const sides=Math.floor(rand()*3)+4;
+    const rot=rand()*Math.PI*2+t*0.25;
+    const alpha=(rand()*0.5+0.3)*shimmer;
+    const bright=rand()*80+130;
+    ctx.save(); ctx.translate(cx,cy); ctx.rotate(rot);
     ctx.beginPath();
-    for (let j = 0; j < sides; j++) {
-      const a = (j / sides) * Math.PI * 2;
-      j === 0 ? ctx.moveTo(Math.cos(a) * size, Math.sin(a) * size)
-              : ctx.lineTo(Math.cos(a) * size, Math.sin(a) * size);
+    for (let j=0;j<sides;j++) {
+      const a=(j/sides)*Math.PI*2;
+      j===0?ctx.moveTo(Math.cos(a)*sz,Math.sin(a)*sz):ctx.lineTo(Math.cos(a)*sz,Math.sin(a)*sz);
     }
     ctx.closePath();
-    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, size);
-    grad.addColorStop(0, `rgba(${brightness},${brightness},${brightness+20},${alpha})`);
-    grad.addColorStop(0.6, `rgba(${r},${g},${b},${alpha * 0.3})`);
-    grad.addColorStop(1, `rgba(${r * 0.5},${g * 0.5},${b * 0.5},${alpha * 0.5})`);
-    ctx.fillStyle = grad;
-    ctx.fill();
-
-    // Inner gleam
+    const gr=ctx.createRadialGradient(0,0,0,0,0,sz);
+    const tr=Math.min(255,(bright+tintRgb[0])/2), tg=Math.min(255,(bright+tintRgb[1])/2), tb_=Math.min(255,(bright+tintRgb[2]+20)/2);
+    gr.addColorStop(0,`rgba(${tr},${tg},${tb_},${alpha})`);
+    gr.addColorStop(0.6,`rgba(${r},${g},${b},${alpha*0.25})`);
+    gr.addColorStop(1,`rgba(${r*0.5},${g*0.5},${b*0.5},${alpha*0.4})`);
+    ctx.fillStyle=gr; ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.cos(rotation) * size * 0.7, Math.sin(rotation) * size * 0.7);
-    ctx.strokeStyle = `rgba(255,255,255,${shimmer * 0.8})`;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
+    ctx.moveTo(0,0);
+    ctx.lineTo(Math.cos(rot)*sz*0.7,Math.sin(rot)*sz*0.7);
+    ctx.strokeStyle=`rgba(255,255,255,${shimmer*0.85})`; ctx.lineWidth=1; ctx.stroke();
     ctx.restore();
   }
-
-  // Animated sparkle dots
-  const sparkleCount = Math.floor(shimmer * 20);
-  for (let i = 0; i < sparkleCount; i++) {
-    const sx = (seededRand(i * 7 + 1)() * w);
-    const sy = (seededRand(i * 7 + 2)() * h);
-    const phase = (t * 2 + i) % (Math.PI * 2);
-    const bright = (Math.sin(phase) + 1) / 2;
-    const radius = bright * 2.5 + 0.5;
-    ctx.beginPath();
-    ctx.arc(sx, sy, radius, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255,255,255,${bright * shimmer})`;
-    ctx.fill();
+  const scount=Math.floor(shimmer*25);
+  for (let i=0;i<scount;i++) {
+    const sx=seededRand(i*7+1)()*W, sy=seededRand(i*7+2)()*H;
+    const phase=(t*2.5+i)%(Math.PI*2);
+    const bright=(Math.sin(phase)+1)/2;
+    ctx.beginPath(); ctx.arc(sx,sy,bright*2.8+0.3,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${bright*shimmer})`; ctx.fill();
   }
 }
 
-function renderMarble(ctx, w, h, rgb, params, t = 0) {
-  const veins = params.veins || 6;
-  const contrast = (params.contrast || 60) / 100;
-  const [r, g, b] = rgb;
-
-  // Base
-  const bg = ctx.createLinearGradient(0, 0, w, h);
-  bg.addColorStop(0, rgbToHex(r, g, b));
-  bg.addColorStop(1, rgbToHex(
-    Math.min(255, r + 30),
-    Math.min(255, g + 30),
-    Math.min(255, b + 30)
-  ));
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, w, h);
-
-  // Marble veins using Perlin-like noise (sine sum)
-  ctx.lineWidth = 0.8;
-  for (let v = 0; v < veins; v++) {
-    const rand = seededRand(v * 31 + 7);
-    const startX = rand() * w;
-    const startY = rand() * h;
-    const angle = rand() * Math.PI;
-    const freq = 0.01 + rand() * 0.02;
-    const amp = 20 + rand() * 60;
-    const phase = rand() * Math.PI * 2;
-    const veinContrast = (0.3 + rand() * 0.7) * contrast;
-    const dark = rand() > 0.5;
-    const veinColor = dark
-      ? `rgba(${Math.max(0,r-80)},${Math.max(0,g-80)},${Math.max(0,b-80)},${veinContrast})`
-      : `rgba(255,255,255,${veinContrast * 0.8})`;
-
-    ctx.beginPath();
-    let px = startX, py = startY;
-    ctx.moveTo(px, py);
-    const len = Math.sqrt(w * w + h * h);
-    for (let s = 0; s < len; s += 2) {
-      const nx = px + Math.cos(angle) * 2;
-      const ny = py + Math.sin(angle) * 2;
-      const wiggle = Math.sin(s * freq + phase + t * 0.1) * amp * 0.05;
-      px = nx + Math.cos(angle + Math.PI / 2) * wiggle;
-      py = ny + Math.sin(angle + Math.PI / 2) * wiggle;
-      ctx.lineTo(px, py);
-    }
-    ctx.strokeStyle = veinColor;
-    ctx.lineWidth = 0.6 + rand() * 1.5;
-    ctx.stroke();
-
-    // Sub-vein
-    if (rand() > 0.4) {
-      ctx.beginPath();
-      px = startX + rand() * 10; py = startY + rand() * 10;
-      ctx.moveTo(px, py);
-      for (let s = 0; s < len * 0.5; s += 2) {
-        const nx = px + Math.cos(angle + 0.3) * 2;
-        const ny = py + Math.sin(angle + 0.3) * 2;
-        const wiggle = Math.sin(s * freq * 1.5 + phase + t * 0.15) * amp * 0.03;
-        px = nx + Math.cos(angle + Math.PI / 2) * wiggle;
-        py = ny + Math.sin(angle + Math.PI / 2) * wiggle;
-        ctx.lineTo(px, py);
-      }
-      ctx.strokeStyle = veinColor.replace(/[\d.]+\)$/, `${veinContrast * 0.4})`);
-      ctx.lineWidth = 0.4;
-      ctx.stroke();
-    }
+function renderPearl(ctx, W, H, rgb, params, t=0) {
+  const iri=(params.iridescence||60)/100, layers=params.layers||4;
+  const speed=(params.sheen_speed||40)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  for (let layer=0;layer<layers;layer++) {
+    const shift=t*speed*0.6+layer*(Math.PI*2/layers);
+    const hueShift=(shift*60)%360, s=Math.sin(shift)*0.5+0.5;
+    const iriR=Math.min(255,r+Math.sin(hueShift*Math.PI/180)*100*iri);
+    const iriG=Math.min(255,g+Math.sin((hueShift+120)*Math.PI/180)*100*iri);
+    const iriB=Math.min(255,b+Math.sin((hueShift+240)*Math.PI/180)*100*iri);
+    const grad=ctx.createRadialGradient(W*(0.3+0.4*Math.cos(shift)),H*(0.3+0.4*Math.sin(shift)),0,W*0.5,H*0.5,W*0.75);
+    grad.addColorStop(0,`rgba(${iriR},${iriG},${iriB},${s*0.35*iri})`);
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=grad; ctx.fillRect(0,0,W,H);
   }
-
-  // Slight gloss highlight
-  const gloss = ctx.createLinearGradient(0, 0, w * 0.3, h * 0.3);
-  gloss.addColorStop(0, 'rgba(255,255,255,0.12)');
-  gloss.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = gloss;
-  ctx.fillRect(0, 0, w, h);
+  const sh=ctx.createLinearGradient(0,0,W,H);
+  sh.addColorStop(0,`rgba(255,255,255,${0.28*iri})`); sh.addColorStop(0.5,'rgba(255,255,255,0)'); sh.addColorStop(1,`rgba(200,200,255,${0.12*iri})`);
+  ctx.fillStyle=sh; ctx.fillRect(0,0,W,H);
 }
 
-function renderMetallic(ctx, w, h, rgb, params, t = 0) {
-  const gloss = (params.gloss || 75) / 100;
-  const grainAngle = ((params.grain || 45) * Math.PI) / 180;
-  const [r, g, b] = rgb;
+function renderMica(ctx, W, H, rgb, params, t=0) {
+  const density=params.flake_density||60, fs=params.flake_size||8;
+  const tintRgb=hexToRgb(params.color_tint||'#c8d8ff');
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(61);
+  for (let i=0;i<density*2;i++) {
+    const fx=rand()*W, fy=rand()*H, fsz=rand()*fs+2;
+    const rot=rand()*Math.PI, phase=(t*1.5+i*0.7)%(Math.PI*2);
+    const bright=(Math.sin(phase)+1)/2, alpha=bright*0.72+0.1;
+    ctx.save(); ctx.translate(fx,fy); ctx.rotate(rot+t*0.08); ctx.scale(1,0.28);
+    ctx.beginPath(); ctx.ellipse(0,0,fsz,fsz*0.6,0,0,Math.PI*2);
+    const fg=ctx.createRadialGradient(0,0,0,0,0,fsz);
+    fg.addColorStop(0,`rgba(${tintRgb[0]},${tintRgb[1]},${tintRgb[2]},${alpha})`);
+    fg.addColorStop(0.5,`rgba(${Math.min(255,r+60)},${Math.min(255,g+60)},${Math.min(255,b+60)},${alpha*0.5})`);
+    fg.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=fg; ctx.fill(); ctx.restore();
+  }
+}
 
-  // Brushed base gradient along grain direction
-  const cos = Math.cos(grainAngle);
-  const sin = Math.sin(grainAngle);
-  const gx = ctx.createLinearGradient(
-    w / 2 - cos * w, h / 2 - sin * h,
-    w / 2 + cos * w, h / 2 + sin * h
-  );
-  gx.addColorStop(0, rgbToHex(Math.min(255, r + 60), Math.min(255, g + 60), Math.min(255, b + 60)));
-  gx.addColorStop(0.35, rgbToHex(r, g, b));
-  gx.addColorStop(0.5, rgbToHex(Math.min(255, r + 90), Math.min(255, g + 90), Math.min(255, b + 90)));
-  gx.addColorStop(0.65, rgbToHex(r, g, b));
-  gx.addColorStop(1, rgbToHex(Math.max(0, r - 40), Math.max(0, g - 40), Math.max(0, b - 40)));
-  ctx.fillStyle = gx;
-  ctx.fillRect(0, 0, w, h);
+function renderOpal(ctx, W, H, rgb, params, t=0) {
+  const fi=(params.fire_intensity||70)/100, ps=params.patch_scale||20;
+  const trans=(params.translucency||50)/100;
+  const [r,g,b]=rgb;
+  const baseR=Math.max(0,r*0.6+40*trans), baseG=Math.max(0,g*0.6+40*trans), baseB=Math.max(0,b*0.6+60*trans);
+  ctx.fillStyle=rgbToHex(baseR,baseG,baseB); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(77);
+  const patches=Math.floor(W*H/(ps*ps*4))+10;
+  const hues=[0,30,60,120,180,240,300];
+  for (let i=0;i<patches;i++) {
+    const px=rand()*W, py=rand()*H, pr=rand()*ps+ps*0.3;
+    const hue=hues[Math.floor(rand()*hues.length)], phase=t*0.4+rand()*Math.PI*2;
+    const alpha=(Math.sin(phase)+1)/2*fi*0.65;
+    const hr=Math.sin(hue*Math.PI/180)*127+128;
+    const hg=Math.sin((hue+120)*Math.PI/180)*127+128;
+    const hbl=Math.sin((hue+240)*Math.PI/180)*127+128;
+    const gr=ctx.createRadialGradient(px,py,0,px,py,pr);
+    gr.addColorStop(0,`rgba(${hr},${hg},${hbl},${alpha})`); gr.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=gr; ctx.fillRect(px-pr,py-pr,pr*2,pr*2);
+  }
+  ctx.globalAlpha=0.15*trans; ctx.fillStyle='white'; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1;
+}
 
-  // Micro-brushed lines
-  ctx.save();
-  ctx.globalAlpha = 0.06;
-  for (let i = 0; i < 80; i++) {
-    const rand = seededRand(i);
-    const offset = rand() * (Math.abs(cos) * w + Math.abs(sin) * h) * 2 - (Math.abs(cos) * w + Math.abs(sin) * h);
-    const x0 = w / 2 + (-sin) * offset - cos * w;
-    const y0 = h / 2 + cos * offset - sin * h;
-    const x1 = w / 2 + (-sin) * offset + cos * w;
-    const y1 = h / 2 + cos * offset + sin * h;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.strokeStyle = rand() > 0.5 ? 'white' : 'black';
-    ctx.lineWidth = 0.5;
-    ctx.stroke();
+function renderMetallic(ctx, W, H, rgb, params, t=0) {
+  const gloss=(params.gloss||75)/100, grainAngle=((params.grain||45)*Math.PI)/180;
+  const refl=(params.reflectivity||60)/100;
+  const [r,g,b]=rgb;
+  const cos=Math.cos(grainAngle), sin=Math.sin(grainAngle);
+  const gx=ctx.createLinearGradient(W/2-cos*W,H/2-sin*H,W/2+cos*W,H/2+sin*H);
+  gx.addColorStop(0,rgbToHex(Math.min(255,r+60),Math.min(255,g+60),Math.min(255,b+60)));
+  gx.addColorStop(0.35,rgbToHex(r,g,b));
+  gx.addColorStop(0.5,rgbToHex(Math.min(255,r+90),Math.min(255,g+90),Math.min(255,b+90)));
+  gx.addColorStop(0.65,rgbToHex(r,g,b));
+  gx.addColorStop(1,rgbToHex(Math.max(0,r-40),Math.max(0,g-40),Math.max(0,b-40)));
+  ctx.fillStyle=gx; ctx.fillRect(0,0,W,H);
+  ctx.save(); ctx.globalAlpha=0.055;
+  for (let i=0;i<90;i++) {
+    const rand=seededRand(i);
+    const offset=rand()*(Math.abs(cos)*W+Math.abs(sin)*H)*2-(Math.abs(cos)*W+Math.abs(sin)*H);
+    const x0=W/2+(-sin)*offset-cos*W,y0=H/2+cos*offset-sin*H;
+    const x1=W/2+(-sin)*offset+cos*W,y1=H/2+cos*offset+sin*H;
+    ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1);
+    ctx.strokeStyle=rand()>0.5?'white':'black'; ctx.lineWidth=0.5; ctx.stroke();
   }
   ctx.restore();
-
-  // Gloss reflection band
-  const refPhase = (Math.sin(t * 0.5) * 0.5 + 0.5) * 0.6 + 0.2;
-  const refX = ctx.createLinearGradient(
-    w * (refPhase - 0.15), 0, w * (refPhase + 0.15), 0
-  );
-  refX.addColorStop(0, 'rgba(255,255,255,0)');
-  refX.addColorStop(0.5, `rgba(255,255,255,${gloss * 0.4})`);
-  refX.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = refX;
-  ctx.fillRect(0, 0, w, h);
+  const rp=(Math.sin(t*0.5)*0.5+0.5)*0.6+0.2;
+  const rg=ctx.createLinearGradient(W*(rp-0.18),0,W*(rp+0.18),0);
+  rg.addColorStop(0,'rgba(255,255,255,0)');
+  rg.addColorStop(0.5,`rgba(255,255,255,${gloss*refl*0.4})`);
+  rg.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=rg; ctx.fillRect(0,0,W,H);
 }
 
-function renderPearl(ctx, w, h, rgb, params, t = 0) {
-  const iri = (params.iridescence || 60) / 100;
-  const layers = params.layers || 4;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  for (let layer = 0; layer < layers; layer++) {
-    const shift = (t * 0.3 + layer * (Math.PI * 2 / layers));
-    const hueShift = (shift * 60) % 360;
-    const s = Math.sin(shift) * 0.5 + 0.5;
-
-    // Iridescent color layer
-    const iriR = Math.min(255, r + Math.sin(hueShift * Math.PI / 180) * 80 * iri);
-    const iriG = Math.min(255, g + Math.sin((hueShift + 120) * Math.PI / 180) * 80 * iri);
-    const iriB = Math.min(255, b + Math.sin((hueShift + 240) * Math.PI / 180) * 80 * iri);
-
-    const grad = ctx.createRadialGradient(
-      w * (0.3 + 0.4 * Math.cos(shift)),
-      h * (0.3 + 0.4 * Math.sin(shift)),
-      0,
-      w * 0.5, h * 0.5, w * 0.7
-    );
-    grad.addColorStop(0, `rgba(${iriR},${iriG},${iriB},${s * 0.3 * iri})`);
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
+function renderHammered(ctx, W, H, rgb, params) {
+  const ds=params.dimple_size||16, relief=(params.relief||60)/100, gloss=(params.gloss||70)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const cols=Math.ceil(W/ds)+1, rows=Math.ceil(H/ds)+1;
+  const rand=seededRand(29);
+  for (let row=0;row<rows;row++) for (let col=0;col<cols;col++) {
+    const jx=(rand()-0.5)*ds*0.5, jy=(rand()-0.5)*ds*0.5;
+    const cx=col*ds+ds/2+jx+(row%2===0?0:ds/2), cy=row*ds*0.866+ds/2+jy;
+    const radius=ds*0.45*(0.7+rand()*0.3);
+    const sg=ctx.createRadialGradient(cx,cy,0,cx-radius*0.3,cy-radius*0.3,radius);
+    sg.addColorStop(0,`rgba(0,0,0,${0.35*relief})`); sg.addColorStop(0.6,'rgba(0,0,0,0)');
+    ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fillStyle=sg; ctx.fill();
+    const hg=ctx.createRadialGradient(cx-radius*0.28,cy-radius*0.28,0,cx,cy,radius);
+    hg.addColorStop(0,`rgba(255,255,255,${0.5*relief*gloss})`); hg.addColorStop(0.5,'rgba(255,255,255,0)');
+    ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fillStyle=hg; ctx.fill();
   }
-
-  // Soft sheen overlay
-  const sheen = ctx.createLinearGradient(0, 0, w, h);
-  sheen.addColorStop(0, `rgba(255,255,255,${0.25 * iri})`);
-  sheen.addColorStop(0.5, 'rgba(255,255,255,0)');
-  sheen.addColorStop(1, `rgba(200,200,255,${0.1 * iri})`);
-  ctx.fillStyle = sheen;
-  ctx.fillRect(0, 0, w, h);
 }
 
-function renderCrackle(ctx, w, h, rgb, params) {
-  const crackSize = params.crack_size || 10;
-  const depth = (params.depth || 55) / 100;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  // Generate Voronoi-like crackle using seeded points
-  const numCells = Math.floor((w * h) / (crackSize * crackSize * 15)) + 8;
-  const rand = seededRand(91);
-  const points = [];
-  for (let i = 0; i < numCells; i++) {
-    points.push({ x: rand() * w, y: rand() * h });
+function renderChrome(ctx, W, H, rgb, params, t=0) {
+  const sharp=(params.sharpness||85)/100, tint=(params.tint||30)/100;
+  const scratch=(params.scratch||10)/100;
+  const [r,g,b]=rgb;
+  // Environment reflection bands
+  const envGrad=ctx.createLinearGradient(0,0,0,H);
+  envGrad.addColorStop(0,'rgb(220,225,235)'); envGrad.addColorStop(0.25,'rgb(180,185,195)');
+  envGrad.addColorStop(0.45,'rgb(240,242,248)'); envGrad.addColorStop(0.6,'rgb(80,85,90)');
+  envGrad.addColorStop(0.75,'rgb(200,205,215)'); envGrad.addColorStop(1,'rgb(120,125,130)');
+  ctx.fillStyle=envGrad; ctx.fillRect(0,0,W,H);
+  // Colour tint
+  ctx.fillStyle=`rgba(${r},${g},${b},${tint})`; ctx.fillRect(0,0,W,H);
+  // Specular highlight
+  const specPhase=t*0.3;
+  const specX=W*(0.2+Math.sin(specPhase)*0.1), specW=W*(0.15+sharp*0.2);
+  const sg=ctx.createLinearGradient(specX,0,specX+specW,0);
+  sg.addColorStop(0,'rgba(255,255,255,0)'); sg.addColorStop(0.3,`rgba(255,255,255,${0.7*sharp})`); sg.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+  // Scratches
+  if (scratch>0) {
+    const rand=seededRand(55);
+    for (let i=0;i<Math.floor(scratch*30);i++) {
+      const sx=rand()*W, sy=rand()*H, sl=rand()*W*0.3+10;
+      const sa=rand()*0.3+Math.PI*0.45;
+      ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(sx+Math.cos(sa)*sl,sy+Math.sin(sa)*sl);
+      ctx.strokeStyle=`rgba(255,255,255,${rand()*0.4+0.1})`; ctx.lineWidth=rand()*1.2+0.3; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx+0.8,sy+0.8); ctx.lineTo(sx+Math.cos(sa)*sl+0.8,sy+Math.sin(sa)*sl+0.8);
+      ctx.strokeStyle=`rgba(0,0,0,${rand()*0.2+0.05})`; ctx.lineWidth=0.5; ctx.stroke();
+    }
   }
+}
 
-  // Draw crack borders between cells
-  ctx.strokeStyle = `rgba(${Math.max(0,r-100)},${Math.max(0,g-80)},${Math.max(0,b-80)},${depth})`;
-  ctx.lineWidth = 1.5;
+function renderBrushedGold(ctx, W, H, rgb, params, t=0) {
+  const warmth=(params.gold_tone||60)/100, brushD=(params.brush_density||50)/100;
+  const shine=(params.shine||75)/100;
+  const [r,g,b]=rgb;
+  const goldR=Math.min(255,r*0.4+180+warmth*30), goldG=Math.min(255,g*0.3+130+warmth*20), goldB=Math.max(0,b*0.1+20);
+  ctx.fillStyle=rgbToHex(goldR,goldG,goldB); ctx.fillRect(0,0,W,H);
+  // Radial brush strokes
+  const rand=seededRand(33);
+  ctx.save(); ctx.globalAlpha=0.06;
+  for (let i=0;i<Math.floor(brushD*120);i++) {
+    const cx=W*0.5+rand()*W*0.2-W*0.1, cy=H*0.5+rand()*H*0.2-H*0.1;
+    const angle=rand()*Math.PI*2, len=rand()*Math.max(W,H)*0.7+20;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(angle)*len,cy+Math.sin(angle)*len);
+    ctx.strokeStyle=rand()>0.5?'rgba(255,220,50,1)':'rgba(100,60,0,1)'; ctx.lineWidth=0.7; ctx.stroke();
+  }
+  ctx.restore();
+  // Highlight
+  const hs=t*0.35;
+  const hg=ctx.createLinearGradient(W*(0.15+Math.sin(hs)*0.1),0,W*(0.35+Math.sin(hs)*0.1),H);
+  hg.addColorStop(0,'rgba(255,255,200,0)'); hg.addColorStop(0.4,`rgba(255,255,200,${shine*0.55})`); hg.addColorStop(1,'rgba(255,255,200,0)');
+  ctx.fillStyle=hg; ctx.fillRect(0,0,W,H);
+}
 
-  for (let px = 0; px < w; px += 3) {
-    for (let py = 0; py < h; py += 3) {
-      let minD1 = Infinity, minD2 = Infinity;
-      for (const p of points) {
-        const d = Math.sqrt((px - p.x) ** 2 + (py - p.y) ** 2);
-        if (d < minD1) { minD2 = minD1; minD1 = d; }
-        else if (d < minD2) { minD2 = d; }
+function renderMarble(ctx, W, H, rgb, params, t=0) {
+  const veins=params.veins||6, contrast=(params.contrast||60)/100;
+  const veinRgb=hexToRgb(params.vein_color||'#ffffff'), scale=(params.scale||100)/100;
+  const [r,g,b]=rgb;
+  const bg=ctx.createLinearGradient(0,0,W,H);
+  bg.addColorStop(0,rgbToHex(r,g,b)); bg.addColorStop(1,rgbToHex(Math.min(255,r+30),Math.min(255,g+30),Math.min(255,b+30)));
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+  for (let v=0;v<veins;v++) {
+    const rand=seededRand(v*31+7);
+    const angle=rand()*Math.PI, freq=(0.01+rand()*0.02)/scale, amp=20+rand()*60;
+    const phase=rand()*Math.PI*2, vContrast=(0.3+rand()*0.7)*contrast;
+    const dark=rand()>0.5;
+    const vc=dark
+      ?`rgba(${Math.round(veinRgb[0]*0.3)},${Math.round(veinRgb[1]*0.3)},${Math.round(veinRgb[2]*0.3)},${vContrast})`
+      :`rgba(${veinRgb[0]},${veinRgb[1]},${veinRgb[2]},${vContrast})`;
+    ctx.beginPath();
+    let px=rand()*W, py=rand()*H; ctx.moveTo(px,py);
+    const len=Math.sqrt(W*W+H*H);
+    for (let s=0;s<len;s+=2) {
+      const w2=Math.sin(s*freq+phase+t*0.08)*amp*0.05;
+      px+=Math.cos(angle)*2+Math.cos(angle+Math.PI/2)*w2;
+      py+=Math.sin(angle)*2+Math.sin(angle+Math.PI/2)*w2;
+      ctx.lineTo(px,py);
+    }
+    ctx.strokeStyle=vc; ctx.lineWidth=0.7+rand()*1.8; ctx.stroke();
+  }
+  const gl=ctx.createLinearGradient(0,0,W*0.3,H*0.3);
+  gl.addColorStop(0,'rgba(255,255,255,0.1)'); gl.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=gl; ctx.fillRect(0,0,W,H);
+}
+
+function renderStone(ctx, W, H, rgb, params) {
+  const gs=params.grain_size||5, contrast=(params.contrast||50)/100;
+  const c2=hexToRgb(params.color2||'#888888');
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(13), specs=Math.floor(W*H/(gs*gs*2));
+  for (let i=0;i<specs;i++) {
+    const sx=rand()*W, sy=rand()*H, sr=rand()*gs+0.5;
+    const blend=rand(), br=(rand()*2-1)*80*contrast;
+    const useC2=rand()>0.7;
+    const cr=Math.min(255,Math.max(0,(useC2?c2[0]:r)+br));
+    const cg=Math.min(255,Math.max(0,(useC2?c2[1]:g)+br*0.9));
+    const cb_=Math.min(255,Math.max(0,(useC2?c2[2]:b)+br*0.8));
+    ctx.beginPath(); ctx.ellipse(sx,sy,sr,sr*(0.5+rand()*0.5),rand()*Math.PI,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${cr},${cg},${cb_},${0.4+blend*0.5})`; ctx.fill();
+  }
+}
+
+function renderSand(ctx, W, H, rgb, params) {
+  const coarse=params.coarseness||4, depth=(params.depth||45)/100, dir=(params.direction||0)*Math.PI/180;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(19), grains=Math.floor(W*H/(coarse*coarse));
+  for (let i=0;i<grains;i++) {
+    const gx=rand()*W, gy=rand()*H, gr=rand()*coarse*0.8+0.3;
+    const bright=(rand()*2-1)*60*depth;
+    const cr=Math.min(255,Math.max(0,r+bright)), cg=Math.min(255,Math.max(0,g+bright)), cb_=Math.min(255,Math.max(0,b+bright*0.7));
+    ctx.beginPath();
+    ctx.ellipse(gx,gy,gr,gr*(0.4+rand()*0.6),dir+rand()*0.5-0.25,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${cr},${cg},${cb_},${0.3+rand()*0.5})`; ctx.fill();
+  }
+}
+
+function renderConcrete(ctx, W, H, rgb, params) {
+  const rough=(params.roughness||45)/100, stain=(params.stain||25)/100, agg=(params.aggregate||30)/100;
+  const [r,g,b]=rgb;
+  // Desaturate toward grey
+  const grey=(r*0.3+g*0.59+b*0.11);
+  const cr=Math.round(r*0.3+grey*0.7), cg=Math.round(g*0.3+grey*0.7), cb_=Math.round(b*0.3+grey*0.7);
+  ctx.fillStyle=rgbToHex(cr,cg,cb_); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(101);
+  // Form-liner lines
+  for (let i=0;i<Math.floor(W/(15+rand()*10));i++) {
+    const lx=rand()*W;
+    ctx.beginPath(); ctx.moveTo(lx,0); ctx.lineTo(lx,H);
+    ctx.strokeStyle=`rgba(0,0,0,${0.04+rand()*0.04})`; ctx.lineWidth=0.5; ctx.stroke();
+  }
+  // Aggregate
+  const aggCount=Math.floor(agg*200);
+  for (let i=0;i<aggCount;i++) {
+    const ax=rand()*W, ay=rand()*H, ar=rand()*4+1;
+    const bc=(rand()*2-1)*40*rough;
+    ctx.beginPath(); ctx.arc(ax,ay,ar,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${Math.min(255,cr+bc)},${Math.min(255,cg+bc)},${Math.min(255,cb_+bc)},0.5)`; ctx.fill();
+  }
+  // Stain
+  for (let i=0;i<Math.floor(stain*20);i++) {
+    const sx=rand()*W, sy=rand()*H, sr=rand()*30+10;
+    ctx.beginPath(); ctx.arc(sx,sy,sr,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${Math.max(0,cr-60)},${Math.max(0,cg-60)},${Math.max(0,cb_-50)},${rand()*0.2*stain})`; ctx.fill();
+  }
+  // Surface micro-roughness
+  for (let i=0;i<3000*rough;i++) {
+    const px=rand()*W, py=rand()*H, bc=(rand()-0.5)*30*rough;
+    ctx.fillStyle=`rgba(${bc>0?255:0},${bc>0?255:0},${bc>0?255:0},${Math.abs(bc)/30*0.08})`; ctx.fillRect(px,py,1,1);
+  }
+}
+
+function renderCrackle(ctx, W, H, rgb, params) {
+  const cs=params.crack_size||12, depth=(params.depth||55)/100;
+  const cRgb=hexToRgb(params.crack_color||'#1a0a00');
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(91), num=Math.floor(W*H/(cs*cs*14))+8;
+  const pts=[];
+  for (let i=0;i<num;i++) pts.push({x:rand()*W,y:rand()*H});
+  for (let px=0;px<W;px+=2) for (let py=0;py<H;py+=2) {
+    let d1=Infinity,d2=Infinity;
+    for (const p of pts) { const d=(px-p.x)**2+(py-p.y)**2; if(d<d1){d2=d1;d1=d;}else if(d<d2)d2=d; }
+    const bf=1-Math.min(1,(Math.sqrt(d2)-Math.sqrt(d1))/(cs));
+    if (bf>0.8) {
+      ctx.fillStyle=`rgba(${cRgb[0]},${cRgb[1]},${cRgb[2]},${bf*depth})`; ctx.fillRect(px,py,2,2);
+    }
+  }
+  for (const p of pts) {
+    const gr=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,cs*2);
+    gr.addColorStop(0,'rgba(255,255,255,0.06)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=gr; ctx.fillRect(p.x-cs*2,p.y-cs*2,cs*4,cs*4);
+  }
+}
+
+function renderRust(ctx, W, H, rgb, params) {
+  const cov=(params.coverage||50)/100, tex=(params.texture||60)/100;
+  const pRgb=hexToRgb(params.patina_color||'#c84010');
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(37), patches=Math.floor(cov*35)+5;
+  for (let i=0;i<patches;i++) {
+    const px=rand()*W, py=rand()*H, ps=rand()*55+18;
+    const alpha=rand()*0.65*cov+0.08;
+    const gr=ctx.createRadialGradient(px,py,0,px,py,ps);
+    gr.addColorStop(0,`rgba(${pRgb[0]},${pRgb[1]},${pRgb[2]},${alpha})`); gr.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=gr; ctx.fillRect(px-ps,py-ps,ps*2,ps*2);
+  }
+  for (let i=0;i<2500*tex;i++) {
+    const tx=rand()*W, ty=rand()*H, tr=rand()*2.2+0.4;
+    const bright=rand()>0.5?55:-35;
+    ctx.beginPath(); ctx.arc(tx,ty,tr,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${Math.min(255,r+bright)},${Math.min(255,g+bright*0.6)},${b},${0.18+rand()*0.28})`; ctx.fill();
+  }
+}
+
+function renderOxidized(ctx, W, H, rgb, params) {
+  const patina=(params.patina||55)/100, rough=(params.roughness||60)/100;
+  const dpth=(params.depth||50)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(53);
+  for (let i=0;i<Math.floor(patina*40);i++) {
+    const px=rand()*W, py=rand()*H, ps=rand()*40+10;
+    const gr=rand()*80+120, bl=rand()*60+80;
+    const alpha=rand()*0.6*patina+0.05;
+    const grd=ctx.createRadialGradient(px,py,0,px,py,ps);
+    grd.addColorStop(0,`rgba(10,${gr},${bl},${alpha})`); grd.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=grd; ctx.fillRect(px-ps,py-ps,ps*2,ps*2);
+  }
+  // Drip streaks
+  for (let i=0;i<Math.floor(dpth*15);i++) {
+    const dx=rand()*W, dy=rand()*H, dl=rand()*60+20;
+    ctx.beginPath(); ctx.moveTo(dx,dy); ctx.lineTo(dx+rand()*4-2,dy+dl);
+    ctx.strokeStyle=`rgba(10,${Math.floor(rand()*80+100)},70,${rand()*0.4*dpth})`; ctx.lineWidth=rand()*3+0.5; ctx.stroke();
+  }
+  // Micro texture
+  for (let i=0;i<2000*rough;i++) {
+    const px=rand()*W, py=rand()*H;
+    ctx.fillStyle=`rgba(0,${Math.floor(rand()*60+80)},50,${rand()*0.08*rough})`; ctx.fillRect(px,py,1,1);
+  }
+}
+
+function renderVelvet(ctx, W, H, rgb, params, t=0) {
+  const soft=(params.softness||65)/100, dir=((params.direction||90)*Math.PI)/180;
+  const sheen=(params.sheen||40)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const sh=ctx.createLinearGradient(W/2-Math.cos(dir)*W,H/2-Math.sin(dir)*H,W/2+Math.cos(dir)*W,H/2+Math.sin(dir)*H);
+  sh.addColorStop(0,`rgba(0,0,0,${0.42*soft})`); sh.addColorStop(0.38,`rgba(0,0,0,0)`);
+  sh.addColorStop(0.68,`rgba(255,255,255,${0.18*soft*sheen})`); sh.addColorStop(1,`rgba(0,0,0,${0.22*soft})`);
+  ctx.fillStyle=sh; ctx.fillRect(0,0,W,H);
+  const rand=seededRand(77);
+  for (let i=0;i<2500;i++) {
+    const fx=rand()*W, fy=rand()*H, fl=rand()*4.5+0.8;
+    const alpha=rand()*0.05*soft;
+    ctx.beginPath(); ctx.moveTo(fx,fy); ctx.lineTo(fx+Math.cos(dir+rand()*0.5-0.25)*fl,fy+Math.sin(dir+rand()*0.5-0.25)*fl);
+    ctx.strokeStyle=rand()>0.5?`rgba(255,255,255,${alpha})`:`rgba(0,0,0,${alpha})`;
+    ctx.lineWidth=0.4; ctx.stroke();
+  }
+}
+
+function renderFabricWeave(ctx, W, H, rgb, params) {
+  const ws=params.weave_size||6, contrast=(params.contrast||50)/100;
+  const wtype=params.weave_type||'Plain';
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const dark=`rgba(0,0,0,${0.35*contrast})`, light=`rgba(255,255,255,${0.35*contrast})`;
+  const half=ws/2;
+  for (let y=0;y<H;y+=half) for (let x=0;x<W;x+=half) {
+    const col=Math.floor(x/half)%2, row=Math.floor(y/half)%2;
+    let shade=false;
+    if (wtype==='Plain') shade=(col+row)%2===0;
+    else if (wtype==='Twill') shade=(col+row)%3===0;
+    else shade=(col*3+row)%5===0;
+    ctx.fillStyle=shade?dark:light; ctx.fillRect(x,y,half,half);
+  }
+  // Thread highlights
+  for (let y=0;y<H;y+=ws) {
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y);
+    ctx.strokeStyle=`rgba(255,255,255,${0.1*contrast})`; ctx.lineWidth=0.5; ctx.stroke();
+  }
+  for (let x=0;x<W;x+=ws) {
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H);
+    ctx.strokeStyle=`rgba(0,0,0,${0.08*contrast})`; ctx.lineWidth=0.5; ctx.stroke();
+  }
+}
+
+function renderWood(ctx, W, H, rgb, params, t=0) {
+  const freq=(params.grain_freq||10)/100, wave=(params.wave||40)/100, knots=params.knots||1;
+  const [r,g,b]=rgb;
+  for (let py=0;py<H;py++) for (let px=0;px<W;px++) {
+    const cx=px-W/2, cy=py-H/2;
+    let dist=Math.sqrt(cx*cx+cy*cy);
+    // Knots
+    for (let k=0;k<knots;k++) {
+      const rand=seededRand(k*17+5);
+      const kx=(rand()-0.5)*W*0.5, ky=(rand()-0.5)*H*0.5;
+      dist+=50*Math.exp(-((cx-kx)**2+(cy-ky)**2)/(W*W*0.03));
+    }
+    const angle=Math.atan2(cy,cx);
+    const ring=dist*freq+Math.sin(angle*3+wave*Math.sin(dist*0.05))*wave*20;
+    const rv=Math.sin(ring)*0.5+0.5;
+    const bright=(rv*2-1)*52;
+    ctx.fillStyle=rgbToHex(Math.min(255,Math.max(0,r+bright*1.1)),Math.min(255,Math.max(0,g+bright*0.8)),Math.min(255,Math.max(0,b+bright*0.4)));
+    ctx.fillRect(px,py,1,1);
+  }
+}
+
+function renderLeather(ctx, W, H, rgb, params) {
+  const ps=params.pebble_size||8, depth=(params.depth||55)/100, gloss=(params.gloss||40)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(63);
+  const cols=Math.ceil(W/ps)+2, rows=Math.ceil(H/ps)+2;
+  for (let row=0;row<rows;row++) for (let col=0;col<cols;col++) {
+    const jx=(rand()-0.5)*ps*0.6, jy=(rand()-0.5)*ps*0.6;
+    const cx=col*ps+jx+(row%2?ps/2:0), cy=row*ps*0.9+jy;
+    const pr=ps*0.38*(0.65+rand()*0.35);
+    // Pebble shadow (bottom-right)
+    const sg=ctx.createRadialGradient(cx+pr*0.2,cy+pr*0.2,0,cx,cy,pr*1.2);
+    sg.addColorStop(0,'rgba(0,0,0,0)'); sg.addColorStop(1,`rgba(0,0,0,${0.45*depth})`);
+    ctx.beginPath(); ctx.ellipse(cx,cy,pr,pr*(0.75+rand()*0.25),rand()*0.5,0,Math.PI*2);
+    ctx.fillStyle=sg; ctx.fill();
+    // Pebble highlight (top-left)
+    const hg=ctx.createRadialGradient(cx-pr*0.25,cy-pr*0.25,0,cx,cy,pr);
+    hg.addColorStop(0,`rgba(255,255,255,${0.4*depth*gloss})`); hg.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.beginPath(); ctx.ellipse(cx,cy,pr,pr*(0.75+rand()*0.25),rand()*0.5,0,Math.PI*2);
+    ctx.fillStyle=hg; ctx.fill();
+  }
+}
+
+function renderGlitter(ctx, W, H, rgb, params, t=0) {
+  const density=params.density||90, sz=params.size||3;
+  const tRgb=hexToRgb(params.color_tint||'#ffffff');
+  const rainbow=(params.rainbow||50)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(55);
+  for (let i=0;i<density*3;i++) {
+    const gx=rand()*W, gy=rand()*H, gs=rand()*sz+0.5;
+    const phase=(t*3+i*1.3)%(Math.PI*2), bright=(Math.sin(phase)+1)/2;
+    const hue=rainbow>0.5?(rand()*360):(rand()*30+(t*60)%360);
+    const alpha=bright*0.9+0.1;
+    ctx.save(); ctx.translate(gx,gy); ctx.rotate(phase);
+    ctx.beginPath();
+    for (let j=0;j<4;j++) { const a=(j/4)*Math.PI*2; ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*gs*2.5,Math.sin(a)*gs*2.5); }
+    ctx.strokeStyle=rainbow>0.5?`hsla(${hue},100%,90%,${alpha})`:`rgba(${tRgb[0]},${tRgb[1]},${tRgb[2]},${alpha})`;
+    ctx.lineWidth=gs*0.7; ctx.stroke(); ctx.restore();
+    ctx.beginPath(); ctx.arc(gx,gy,gs*0.55,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${bright*0.85})`; ctx.fill();
+  }
+}
+
+function renderGalaxy(ctx, W, H, rgb, params, t=0) {
+  const stars=params.stars||150, nebula=(params.nebula||55)/100, rot=(params.rotation||40)/100;
+  const [r,g,b]=rgb;
+  const dk=Math.min;
+  ctx.fillStyle=rgbToHex(dk(30,r*0.1),dk(30,g*0.1),dk(60,b*0.2+20)); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(88);
+  for (let i=0;i<8;i++) {
+    const nx=rand()*W, ny=rand()*H, nr=rand()*W*0.42+W*0.08;
+    const phase=t*(0.1+rot*0.2)+i*0.8;
+    const cr=rand()*255, cg=rand()*100, cb_=rand()*255;
+    const gr=ctx.createRadialGradient(nx,ny,0,nx,ny,nr);
+    gr.addColorStop(0,`rgba(${cr},${cg},${cb_},${nebula*0.3})`); gr.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=gr;
+    ctx.save(); ctx.translate(nx,ny); ctx.scale(1+Math.sin(phase)*0.1,1+Math.cos(phase)*0.1); ctx.translate(-nx,-ny);
+    ctx.fillRect(0,0,W,H); ctx.restore();
+  }
+  const mg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,W*0.35);
+  mg.addColorStop(0,`rgba(${r},${g},${b},${nebula*0.55})`); mg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=mg; ctx.fillRect(0,0,W,H);
+  const srand=seededRand(99);
+  for (let i=0;i<stars;i++) {
+    const sx=srand()*W, sy=srand()*H, sr=srand()*1.6+0.25;
+    const phase=(t*2+i*0.38)%(Math.PI*2), bright=(Math.sin(phase)+1)/2;
+    ctx.beginPath(); ctx.arc(sx,sy,sr*(0.5+bright*0.5),0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${bright*0.9+0.1})`; ctx.fill();
+    if (sr>1) {
+      const gw=ctx.createRadialGradient(sx,sy,0,sx,sy,sr*5);
+      gw.addColorStop(0,`rgba(255,255,255,${bright*0.35})`); gw.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle=gw; ctx.fillRect(sx-sr*5,sy-sr*5,sr*10,sr*10);
+    }
+  }
+}
+
+function renderNeonGlow(ctx, W, H, rgb, params, t=0) {
+  const gsize=(params.glow_size||20), inten=(params.intensity||75)/100, pulse=(params.pulse||50)/100;
+  const [r,g,b]=rgb;
+  // Dark base
+  ctx.fillStyle=rgbToHex(Math.round(r*0.08),Math.round(g*0.08),Math.round(b*0.08)); ctx.fillRect(0,0,W,H);
+  // Pulsating glow layers
+  const pulseFactor=1+(Math.sin(t*pulse*2)*0.35);
+  for (let layer=5;layer>0;layer--) {
+    const alpha=(inten*(layer/5)*0.35)*pulseFactor;
+    const spread=gsize*(6-layer)*pulseFactor;
+    const gr=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.min(W,H)*0.5+spread);
+    gr.addColorStop(0,`rgba(${r},${g},${b},${alpha})`); gr.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=gr; ctx.fillRect(0,0,W,H);
+  }
+  // Core colour
+  const core=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.min(W,H)*0.3);
+  core.addColorStop(0,`rgba(255,255,255,${inten*0.9})`);
+  core.addColorStop(0.3,`rgba(${r},${g},${b},${inten*0.8})`);
+  core.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=core; ctx.fillRect(0,0,W,H);
+  // Edge neon line
+  ctx.save(); ctx.globalAlpha=inten*pulseFactor*0.7;
+  ctx.shadowColor=rgbToHex(r,g,b); ctx.shadowBlur=gsize*1.5;
+  ctx.strokeStyle=`rgb(${Math.min(255,r+80)},${Math.min(255,g+80)},${Math.min(255,b+80)})`;
+  ctx.lineWidth=2; ctx.strokeRect(gsize,gsize,W-gsize*2,H-gsize*2);
+  ctx.restore();
+}
+
+function renderHolographic(ctx, W, H, rgb, params, t=0) {
+  const inten=(params.intensity||70)/100, scale=params.scale||25, spd=(params.speed||40)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  // Holographic rainbow stripes
+  for (let x=0;x<W;x++) {
+    const hue=((x/W)*360+t*spd*50)%360;
+    ctx.fillStyle=`hsla(${hue},100%,65%,${inten*0.55})`;
+    ctx.fillRect(x,0,1,H);
+  }
+  // Interference pattern
+  for (let px=0;px<W;px+=2) for (let py=0;py<H;py+=2) {
+    const waveX=Math.sin(px/scale+t*spd), waveY=Math.cos(py/scale+t*spd*0.7);
+    const combined=(waveX*waveY+1)/2;
+    if (combined>0.7) {
+      const hue=((px+py)/scale*60+t*spd*30)%360;
+      ctx.fillStyle=`hsla(${hue},100%,80%,${(combined-0.7)*inten*3})`;
+      ctx.fillRect(px,py,2,2);
+    }
+  }
+  // Foil highlight
+  const hl=ctx.createLinearGradient(0,0,W,H);
+  hl.addColorStop(0,`rgba(255,255,255,${inten*0.25})`); hl.addColorStop(0.5,'rgba(255,255,255,0)'); hl.addColorStop(1,`rgba(255,255,255,${inten*0.15})`);
+  ctx.fillStyle=hl; ctx.fillRect(0,0,W,H);
+}
+
+function renderChameleon(ctx, W, H, rgb, params, t=0) {
+  const c2Rgb=hexToRgb(params.color2||'#00d4aa');
+  const sharp=(params.sharpness||50)/100, angle=(params.angle_bias||60)/100;
+  const [r,g,b]=rgb;
+  // Animate the flip band
+  const band=(Math.sin(t*0.8)*0.5+0.5)*angle+(1-angle)*0.3;
+  const grad=ctx.createLinearGradient(0,0,W,H);
+  const s=Math.max(0,band-sharp*0.3), e=Math.min(1,band+sharp*0.3);
+  grad.addColorStop(0,rgbToHex(r,g,b)); grad.addColorStop(s,rgbToHex(r,g,b));
+  grad.addColorStop((s+e)/2,rgbToHex(Math.min(255,(r+c2Rgb[0])/2+30),Math.min(255,(g+c2Rgb[1])/2+30),Math.min(255,(b+c2Rgb[2])/2+30)));
+  grad.addColorStop(e,rgbToHex(c2Rgb[0],c2Rgb[1],c2Rgb[2])); grad.addColorStop(1,rgbToHex(c2Rgb[0],c2Rgb[1],c2Rgb[2]));
+  ctx.fillStyle=grad; ctx.fillRect(0,0,W,H);
+  // Iridescent overlay
+  const ov=ctx.createLinearGradient(W,0,0,H);
+  ov.addColorStop(0,`rgba(255,255,255,0.15)`); ov.addColorStop(0.5,`rgba(255,255,255,0)`); ov.addColorStop(1,`rgba(0,0,0,0.1)`);
+  ctx.fillStyle=ov; ctx.fillRect(0,0,W,H);
+}
+
+function renderWatercolor(ctx, W, H, rgb, params, t=0) {
+  const wet=(params.wetness||60)/100, layers=params.layers||3, gran=(params.granulation||40)/100;
+  const [r,g,b]=rgb;
+  ctx.fillStyle='#fafafa'; ctx.fillRect(0,0,W,H);
+  const rand=seededRand(44);
+  for (let layer=0;layer<layers;layer++) {
+    const cx=rand()*W*0.6+W*0.2, cy=rand()*H*0.6+H*0.2, cr=rand()*Math.min(W,H)*0.38+Math.min(W,H)*0.14;
+    const lr=Math.min(255,r+(rand()*70-35)), lg=Math.min(255,g+(rand()*70-35)), lb=Math.min(255,b+(rand()*70-35));
+    const alpha=(0.18+rand()*0.28)*(wet*0.8+0.2);
+    ctx.save(); ctx.translate(cx,cy); ctx.scale(1+rand()*0.5,0.65+rand()*0.7);
+    const wg=ctx.createRadialGradient(0,0,0,0,0,cr);
+    wg.addColorStop(0,`rgba(${lr},${lg},${lb},${alpha*1.6})`); wg.addColorStop(0.55,`rgba(${lr},${lg},${lb},${alpha})`);
+    wg.addColorStop(0.85,`rgba(${lr},${lg},${lb},${alpha*0.5})`); wg.addColorStop(1,`rgba(${lr},${lg},${lb},0)`);
+    ctx.beginPath(); ctx.arc(0,0,cr,0,Math.PI*2); ctx.fillStyle=wg; ctx.fill(); ctx.restore();
+    if (wet>0.35) {
+      for (let e=0;e<6;e++) {
+        const ex=cx+(rand()-0.5)*cr*1.6, ey=cy+(rand()-0.5)*cr*1.6, er=rand()*22+4;
+        const bg=ctx.createRadialGradient(ex,ey,0,ex,ey,er);
+        bg.addColorStop(0,`rgba(${lr},${lg},${lb},${alpha*0.85})`); bg.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=bg; ctx.fillRect(ex-er,ey-er,er*2,er*2);
       }
-      // Near boundary: darker
-      const borderFactor = 1 - Math.min(1, (minD2 - minD1) / crackSize);
-      if (borderFactor > 0.85) {
-        ctx.fillStyle = `rgba(${Math.max(0,r-120)},${Math.max(0,g-100)},${Math.max(0,b-100)},${borderFactor * depth})`;
-        ctx.fillRect(px, py, 3, 3);
-      }
     }
   }
-
-  // Interior cell highlights (slight shine)
-  for (const p of points) {
-    const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, crackSize * 2);
-    grad.addColorStop(0, `rgba(255,255,255,0.08)`);
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(p.x - crackSize * 2, p.y - crackSize * 2, crackSize * 4, crackSize * 4);
+  // Granulation texture
+  for (let i=0;i<4000*gran;i++) {
+    const px=rand()*W, py=rand()*H, bc=rand()*0.06-0.03;
+    ctx.fillStyle=`rgba(${bc>0?255:0},${bc>0?255:0},${bc>0?255:0},${Math.abs(bc)})`;
+    ctx.fillRect(px,py,1,1);
   }
 }
 
-function renderVelvet(ctx, w, h, rgb, params, t = 0) {
-  const softness = (params.softness || 65) / 100;
-  const dir = ((params.direction || 90) * Math.PI) / 180;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  // Directional soft shadow
-  const shadow = ctx.createLinearGradient(
-    w / 2 - Math.cos(dir) * w, h / 2 - Math.sin(dir) * h,
-    w / 2 + Math.cos(dir) * w, h / 2 + Math.sin(dir) * h
-  );
-  shadow.addColorStop(0, `rgba(0,0,0,${0.4 * softness})`);
-  shadow.addColorStop(0.4, `rgba(0,0,0,0)`);
-  shadow.addColorStop(0.7, `rgba(255,255,255,${0.15 * softness})`);
-  shadow.addColorStop(1, `rgba(0,0,0,${0.2 * softness})`);
-  ctx.fillStyle = shadow;
-  ctx.fillRect(0, 0, w, h);
-
-  // Micro fibre noise
-  const rand = seededRand(77);
-  for (let i = 0; i < 2000; i++) {
-    const fx = rand() * w;
-    const fy = rand() * h;
-    const len = rand() * 4 + 1;
-    const alpha = rand() * 0.05 * softness;
+function renderImpasto(ctx, W, H, rgb, params, t=0) {
+  const thick=(params.thickness||60)/100, ss=(params.stroke_size||45)/100, dir=((params.direction||30)*Math.PI)/180;
+  const [r,g,b]=rgb;
+  ctx.fillStyle=rgbToHex(r,g,b); ctx.fillRect(0,0,W,H);
+  const rand=seededRand(66);
+  const strokes=Math.floor(ss*200)+30;
+  for (let i=0;i<strokes;i++) {
+    const sx=rand()*W*1.2-W*0.1, sy=rand()*H*1.2-H*0.1;
+    const len=rand()*W*0.25+20, width=rand()*15*thick+3;
+    const strokeDir=dir+(rand()-0.5)*0.8;
+    const bright=(rand()*2-1)*60*thick;
+    const cr=Math.min(255,Math.max(0,r+bright)), cg=Math.min(255,Math.max(0,g+bright*0.9)), cb_=Math.min(255,Math.max(0,b+bright*0.8));
+    const ex=sx+Math.cos(strokeDir)*len, ey=sy+Math.sin(strokeDir)*len;
+    ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(ex,ey);
+    ctx.strokeStyle=rgbToHex(cr,cg,cb_); ctx.lineWidth=width; ctx.lineCap='round'; ctx.stroke();
+    // Palette knife edge highlight
+    ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(ex,ey);
+    ctx.strokeStyle=`rgba(255,255,255,${thick*0.3})`; ctx.lineWidth=width*0.3; ctx.stroke();
+    // Shadow edge
     ctx.beginPath();
-    ctx.moveTo(fx, fy);
-    ctx.lineTo(fx + Math.cos(dir + rand() * 0.5 - 0.25) * len,
-               fy + Math.sin(dir + rand() * 0.5 - 0.25) * len);
-    ctx.strokeStyle = rand() > 0.5
-      ? `rgba(255,255,255,${alpha})`
-      : `rgba(0,0,0,${alpha})`;
-    ctx.lineWidth = 0.5;
-    ctx.stroke();
+    ctx.moveTo(sx+Math.cos(strokeDir+Math.PI/2)*width*0.5, sy+Math.sin(strokeDir+Math.PI/2)*width*0.5);
+    ctx.lineTo(ex+Math.cos(strokeDir+Math.PI/2)*width*0.5, ey+Math.sin(strokeDir+Math.PI/2)*width*0.5);
+    ctx.strokeStyle=`rgba(0,0,0,${thick*0.25})`; ctx.lineWidth=2; ctx.stroke();
   }
 }
 
-function renderStone(ctx, w, h, rgb, params) {
-  const grainSize = params.grain_size || 5;
-  const contrast = (params.contrast || 50) / 100;
-  const [r, g, b] = rgb;
+// ---- ANIMATED EFFECTS ----
+const ANIMATED_EFFECTS = new Set(['kristall','pearl','mica','opal','metallic','glitter','galaxy','neon_glow','holographic','chameleon','watercolor','brushed_gold','chrome']);
 
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  const rand = seededRand(13);
-  const specs = Math.floor((w * h) / (grainSize * grainSize * 2));
-  for (let i = 0; i < specs; i++) {
-    const sx = rand() * w;
-    const sy = rand() * h;
-    const sr = rand() * grainSize + 1;
-    const bright = (rand() * 2 - 1) * 80 * contrast;
-    const cr = Math.min(255, Math.max(0, r + bright));
-    const cg = Math.min(255, Math.max(0, g + bright * 0.9));
-    const cb = Math.min(255, Math.max(0, b + bright * 0.8));
-    ctx.beginPath();
-    ctx.ellipse(sx, sy, sr, sr * (0.5 + rand() * 0.5), rand() * Math.PI, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.4 + rand() * 0.5})`;
-    ctx.fill();
-  }
-}
-
-function renderGlitter(ctx, w, h, rgb, params, t = 0) {
-  const density = params.density || 80;
-  const size = params.size || 3;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  const rand = seededRand(55);
-  for (let i = 0; i < density * 3; i++) {
-    const gx = rand() * w;
-    const gy = rand() * h;
-    const gs = rand() * size + 0.5;
-    const phase = (t * 3 + i * 1.3) % (Math.PI * 2);
-    const bright = (Math.sin(phase) + 1) / 2;
-    const hueRot = rand() * 360;
-    const alpha = bright * 0.9 + 0.1;
-
-    ctx.save();
-    ctx.translate(gx, gy);
-    ctx.rotate(phase);
-    // Star shape
-    ctx.beginPath();
-    for (let j = 0; j < 4; j++) {
-      const a = (j / 4) * Math.PI * 2;
-      ctx.moveTo(0, 0);
-      ctx.lineTo(Math.cos(a) * gs * 2, Math.sin(a) * gs * 2);
-    }
-    ctx.strokeStyle = `hsla(${hueRot}, 100%, 90%, ${alpha})`;
-    ctx.lineWidth = gs * 0.8;
-    ctx.stroke();
-    ctx.restore();
-
-    ctx.beginPath();
-    ctx.arc(gx, gy, gs * 0.6, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255,255,255,${bright * 0.8})`;
-    ctx.fill();
-  }
-}
-
-function renderHammered(ctx, w, h, rgb, params) {
-  const dimpleSize = params.dimple_size || 16;
-  const relief = (params.relief || 60) / 100;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  const cols = Math.ceil(w / dimpleSize) + 1;
-  const rows = Math.ceil(h / dimpleSize) + 1;
-  const rand = seededRand(29);
-
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      const jx = (rand() - 0.5) * dimpleSize * 0.5;
-      const jy = (rand() - 0.5) * dimpleSize * 0.5;
-      const cx = col * dimpleSize + dimpleSize / 2 + jx + (row % 2 === 0 ? 0 : dimpleSize / 2);
-      const cy = row * dimpleSize * 0.866 + dimpleSize / 2 + jy;
-      const radius = dimpleSize * 0.45 * (0.7 + rand() * 0.3);
-
-      // Dimple shadow
-      const shadowGrad = ctx.createRadialGradient(cx, cy, 0, cx - radius * 0.3, cy - radius * 0.3, radius);
-      shadowGrad.addColorStop(0, `rgba(0,0,0,${0.3 * relief})`);
-      shadowGrad.addColorStop(0.6, `rgba(0,0,0,0)`);
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = shadowGrad;
-      ctx.fill();
-
-      // Dimple highlight
-      const highGrad = ctx.createRadialGradient(
-        cx - radius * 0.25, cy - radius * 0.25, 0,
-        cx, cy, radius
-      );
-      highGrad.addColorStop(0, `rgba(255,255,255,${0.45 * relief})`);
-      highGrad.addColorStop(0.5, 'rgba(255,255,255,0)');
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = highGrad;
-      ctx.fill();
-    }
-  }
-}
-
-function renderSand(ctx, w, h, rgb, params) {
-  const coarseness = params.coarseness || 4;
-  const depth = (params.depth || 45) / 100;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  const rand = seededRand(19);
-  const grains = Math.floor((w * h) / (coarseness * coarseness));
-  for (let i = 0; i < grains; i++) {
-    const gx = rand() * w;
-    const gy = rand() * h;
-    const gr = rand() * coarseness * 0.8 + 0.3;
-    const bright = (rand() * 2 - 1) * 60 * depth;
-    const cr = Math.min(255, Math.max(0, r + bright));
-    const cg = Math.min(255, Math.max(0, g + bright));
-    const cb = Math.min(255, Math.max(0, b + bright * 0.7));
-    ctx.beginPath();
-    ctx.arc(gx, gy, gr, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.3 + rand() * 0.5})`;
-    ctx.fill();
-  }
-}
-
-function renderWood(ctx, w, h, rgb, params, t = 0) {
-  const freq = (params.grain_freq || 10) / 100;
-  const wave = (params.wave || 40) / 100;
-  const [r, g, b] = rgb;
-
-  for (let py = 0; py < h; py++) {
-    for (let px = 0; px < w; px++) {
-      const cx = px - w / 2;
-      const cy = py - h / 2;
-      const dist = Math.sqrt(cx * cx + cy * cy);
-      const angle = Math.atan2(cy, cx);
-      const ring = dist * freq + Math.sin(angle * 3 + wave * Math.sin(dist * 0.05)) * wave * 20;
-      const ringVal = Math.sin(ring) * 0.5 + 0.5;
-      const grain = Math.sin(py * 0.8 + Math.sin(px * 0.03) * 15 + t * 0.02) * 0.5 + 0.5;
-      const combined = ringVal * 0.7 + grain * 0.3;
-      const bright = (combined * 2 - 1) * 50;
-      ctx.fillStyle = rgbToHex(
-        Math.min(255, Math.max(0, r + bright * 1.1)),
-        Math.min(255, Math.max(0, g + bright * 0.8)),
-        Math.min(255, Math.max(0, b + bright * 0.4))
-      );
-      ctx.fillRect(px, py, 1, 1);
-    }
-  }
-}
-
-function renderRust(ctx, w, h, rgb, params) {
-  const coverage = (params.coverage || 50) / 100;
-  const texture = (params.texture || 60) / 100;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  const rand = seededRand(37);
-  const patches = Math.floor(coverage * 30) + 5;
-
-  for (let i = 0; i < patches; i++) {
-    const px = rand() * w;
-    const py = rand() * h;
-    const pSize = rand() * 50 + 20;
-    const rustR = Math.min(255, 160 + rand() * 60);
-    const rustG = Math.min(255, 60 + rand() * 40);
-    const rustB = Math.max(0, 10 + rand() * 20);
-    const alpha = rand() * 0.6 * coverage + 0.1;
-
-    const grad = ctx.createRadialGradient(px, py, 0, px, py, pSize);
-    grad.addColorStop(0, `rgba(${rustR},${rustG},${rustB},${alpha})`);
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(px - pSize, py - pSize, pSize * 2, pSize * 2);
-  }
-
-  // Texture bumps
-  for (let i = 0; i < 2000 * texture; i++) {
-    const tx = rand() * w;
-    const ty = rand() * h;
-    const tr = rand() * 2 + 0.5;
-    const bright = rand() > 0.5 ? 60 : -40;
-    ctx.beginPath();
-    ctx.arc(tx, ty, tr, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${Math.min(255,r+bright)},${Math.min(255,g+bright*0.6)},${b},${0.2 + rand() * 0.3})`;
-    ctx.fill();
-  }
-}
-
-function renderMica(ctx, w, h, rgb, params, t = 0) {
-  const density = params.flake_density || 50;
-  const flakeSize = params.flake_size || 8;
-  const [r, g, b] = rgb;
-
-  ctx.fillStyle = rgbToHex(r, g, b);
-  ctx.fillRect(0, 0, w, h);
-
-  const rand = seededRand(61);
-  for (let i = 0; i < density * 2; i++) {
-    const fx = rand() * w;
-    const fy = rand() * h;
-    const fs = rand() * flakeSize + 2;
-    const rot = rand() * Math.PI;
-    const phase = (t * 1.5 + i * 0.7) % (Math.PI * 2);
-    const bright = (Math.sin(phase) + 1) / 2;
-    const alpha = bright * 0.7 + 0.1;
-
-    ctx.save();
-    ctx.translate(fx, fy);
-    ctx.rotate(rot + t * 0.1);
-    ctx.scale(1, 0.3);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, fs, fs * 0.6, 0, 0, Math.PI * 2);
-    const flakeGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, fs);
-    flakeGrad.addColorStop(0, `rgba(255,255,255,${alpha})`);
-    flakeGrad.addColorStop(0.5, `rgba(${Math.min(255,r+60)},${Math.min(255,g+60)},${Math.min(255,b+60)},${alpha * 0.5})`);
-    flakeGrad.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = flakeGrad;
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-function renderGalaxy(ctx, w, h, rgb, params, t = 0) {
-  const stars = params.stars || 120;
-  const nebula = (params.nebula || 55) / 100;
-  const [r, g, b] = rgb;
-
-  // Deep space background
-  const darkR = Math.min(30, r * 0.1);
-  const darkG = Math.min(30, g * 0.1);
-  const darkB = Math.min(60, b * 0.2 + 20);
-  ctx.fillStyle = rgbToHex(darkR, darkG, darkB);
-  ctx.fillRect(0, 0, w, h);
-
-  // Nebula clouds
-  const rand = seededRand(88);
-  for (let i = 0; i < 8; i++) {
-    const nx = rand() * w;
-    const ny = rand() * h;
-    const nr = rand() * w * 0.4 + w * 0.1;
-    const phase = t * 0.2 + i * 0.8;
-    const cloudR = rand() * 255;
-    const cloudG = rand() * 100;
-    const cloudB = rand() * 255;
-    const grad = ctx.createRadialGradient(nx, ny, 0, nx, ny, nr);
-    grad.addColorStop(0, `rgba(${cloudR},${cloudG},${cloudB},${nebula * 0.3})`);
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad;
-    ctx.save();
-    ctx.translate(nx, ny);
-    ctx.scale(1 + Math.sin(phase) * 0.1, 1 + Math.cos(phase) * 0.1);
-    ctx.translate(-nx, -ny);
-    ctx.fillRect(0, 0, w, h);
-    ctx.restore();
-  }
-
-  // Mix color splash
-  const mixGrad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, w * 0.35);
-  mixGrad.addColorStop(0, `rgba(${r},${g},${b},${nebula * 0.5})`);
-  mixGrad.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = mixGrad;
-  ctx.fillRect(0, 0, w, h);
-
-  // Stars
-  const srand = seededRand(99);
-  for (let i = 0; i < stars; i++) {
-    const sx = srand() * w;
-    const sy = srand() * h;
-    const sr = srand() * 1.5 + 0.3;
-    const phase = (t * 2 + i * 0.4) % (Math.PI * 2);
-    const bright = (Math.sin(phase) + 1) / 2;
-    ctx.beginPath();
-    ctx.arc(sx, sy, sr * (0.5 + bright * 0.5), 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255,255,255,${bright * 0.9 + 0.1})`;
-    ctx.fill();
-
-    // Star glow
-    if (sr > 1) {
-      const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr * 4);
-      glow.addColorStop(0, `rgba(255,255,255,${bright * 0.3})`);
-      glow.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = glow;
-      ctx.fillRect(sx - sr * 4, sy - sr * 4, sr * 8, sr * 8);
-    }
-  }
-}
-
-function renderWatercolor(ctx, w, h, rgb, params, t = 0) {
-  const wetness = (params.wetness || 60) / 100;
-  const layerCount = params.layers || 3;
-  const [r, g, b] = rgb;
-
-  // White paper base
-  ctx.fillStyle = '#fafafa';
-  ctx.fillRect(0, 0, w, h);
-
-  const rand = seededRand(44);
-  for (let layer = 0; layer < layerCount; layer++) {
-    const cx = rand() * w * 0.6 + w * 0.2;
-    const cy = rand() * h * 0.6 + h * 0.2;
-    const cr = rand() * Math.min(w, h) * 0.35 + Math.min(w, h) * 0.15;
-    const layerR = Math.min(255, r + (rand() * 60 - 30));
-    const layerG = Math.min(255, g + (rand() * 60 - 30));
-    const layerB = Math.min(255, b + (rand() * 60 - 30));
-    const alpha = (0.2 + rand() * 0.25) * (wetness * 0.8 + 0.2);
-
-    // Bloom shape (irregular ellipse)
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.scale(1 + rand() * 0.4, 0.7 + rand() * 0.6);
-    const washGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, cr);
-    washGrad.addColorStop(0, `rgba(${layerR},${layerG},${layerB},${alpha * 1.5})`);
-    washGrad.addColorStop(0.6, `rgba(${layerR},${layerG},${layerB},${alpha})`);
-    washGrad.addColorStop(0.85, `rgba(${layerR},${layerG},${layerB},${alpha * 0.5})`);
-    washGrad.addColorStop(1, `rgba(${layerR},${layerG},${layerB},0)`);
-    ctx.beginPath();
-    ctx.arc(0, 0, cr, 0, Math.PI * 2);
-    ctx.fillStyle = washGrad;
-    ctx.fill();
-    ctx.restore();
-
-    // Wet edge bloom
-    if (wetness > 0.4) {
-      for (let e = 0; e < 5; e++) {
-        const ex = cx + (rand() - 0.5) * cr * 1.5;
-        const ey = cy + (rand() - 0.5) * cr * 1.5;
-        const er = rand() * 20 + 5;
-        const bloomGrad = ctx.createRadialGradient(ex, ey, 0, ex, ey, er);
-        bloomGrad.addColorStop(0, `rgba(${layerR},${layerG},${layerB},${alpha * 0.8})`);
-        bloomGrad.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = bloomGrad;
-        ctx.fillRect(ex - er, ey - er, er * 2, er * 2);
-      }
-    }
-  }
-
-  // Paper texture
-  for (let i = 0; i < 3000; i++) {
-    const px = rand() * w;
-    const py = rand() * h;
-    const bright = rand() * 0.04 - 0.02;
-    ctx.fillStyle = `rgba(${bright > 0 ? 255 : 0},${bright > 0 ? 255 : 0},${bright > 0 ? 255 : 0},${Math.abs(bright)})`;
-    ctx.fillRect(px, py, 1, 1);
-  }
-}
-
-// ---- BUILD UI ----
-
-// Navigation
+// ---- NAV ----
 document.querySelectorAll('.nav-pill').forEach(pill => {
   pill.addEventListener('click', () => {
-    document.querySelectorAll('.nav-pill').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-pill').forEach(p=>p.classList.remove('active'));
     pill.classList.add('active');
-    const target = pill.dataset.section;
-    document.querySelectorAll('.section').forEach(s => {
-      s.classList.toggle('active', s.id === `section-${target}`);
-    });
-    if (target === 'effects') buildEffectsGrid();
+    const tgt=pill.dataset.section;
+    document.querySelectorAll('.section').forEach(s=>s.classList.toggle('active',s.id===`section-${tgt}`));
+    if (tgt==='effects') buildEffectsGrid();
+    if (tgt==='preview3d') { setTimeout(()=>{ initThreeJS(); update3DFromState(); },100); }
   });
 });
+document.getElementById('btn-goto-effects')?.addEventListener('click', ()=>document.querySelector('.nav-pill[data-section="effects"]')?.click());
 
-document.getElementById('btn-goto-effects')?.addEventListener('click', () => {
-  document.querySelector('.nav-pill[data-section="effects"]')?.click();
-});
+// ---- PREVIEW CANVAS (HiDPI) ----
+function getPreviewCanvas() { return document.getElementById('preview-canvas'); }
 
-// ---- SLOT MANAGEMENT ----
+function initPreviewCanvas() {
+  const canvas = getPreviewCanvas();
+  const wrap = document.getElementById('preview-wrap');
+  if (!wrap || !canvas) return;
+  const rect = wrap.getBoundingClientRect();
+  const size = rect.width || 300;
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  // Let it fill the wrap (aspect-ratio:1 in CSS)
+}
 
+function getPreviewCtx() {
+  const canvas = getPreviewCanvas();
+  if (!canvas) return null;
+  return resizeHiDPICanvas(canvas);
+}
+
+function getPreviewSize() {
+  const canvas = getPreviewCanvas();
+  if (!canvas) return [300,300];
+  const r = canvas.getBoundingClientRect();
+  return [r.width||300, r.height||300];
+}
+
+// ---- EFFECT PREVIEW CANVAS (HiDPI) ----
+function getEffectCtx() {
+  const canvas = document.getElementById('effect-preview-canvas');
+  if (!canvas) return null;
+  return resizeHiDPICanvas(canvas);
+}
+function getEffectSize() {
+  const c = document.getElementById('effect-preview-canvas');
+  if (!c) return [200,200];
+  const r = c.getBoundingClientRect();
+  return [r.width||200, r.height||200];
+}
+
+// ---- COLOR SLOTS ----
 function buildColorSlots() {
   const container = document.getElementById('color-slots');
   container.innerHTML = '';
-  state.colors.forEach(color => {
-    container.appendChild(createSlotEl(color));
-  });
-  normalizePercentages();
-  renderPreview();
+  state.colors.forEach(c => container.appendChild(createSlotEl(c)));
+  renderPreview(); renderEffectPreview();
 }
 
 function createSlotEl(color) {
   const el = document.createElement('div');
-  el.className = 'color-slot';
-  el.dataset.id = color.id;
+  el.className = 'color-slot'; el.dataset.id = color.id;
   el.innerHTML = `
     <div class="slot-swatch" style="background:${color.hex}">
       <input type="color" class="slot-color-input" value="${color.hex}" aria-label="Pick color">
     </div>
-    <input type="range" class="slot-range" min="1" max="100" value="${color.pct}" aria-label="Mix ratio" style="--pct:${color.pct}%">
+    <input type="range" class="slot-range" min="1" max="100" value="${color.pct}" style="--pct:${color.pct}%">
     <span class="slot-pct">${color.pct}%</span>
-    <button class="slot-remove" aria-label="Remove color">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
-  `;
-
-  const colorInput = el.querySelector('.slot-color-input');
-  const rangeInput = el.querySelector('.slot-range');
-  const pctLabel = el.querySelector('.slot-pct');
-  const swatch = el.querySelector('.slot-swatch');
-  const removeBtn = el.querySelector('.slot-remove');
-
-  colorInput.addEventListener('input', () => {
-    color.hex = colorInput.value;
-    swatch.style.background = color.hex;
-    renderPreview();
-    renderEffectPreview();
+    <button class="slot-remove">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>`;
+  const ci=el.querySelector('.slot-color-input'), ri=el.querySelector('.slot-range');
+  const pl=el.querySelector('.slot-pct'), sw=el.querySelector('.slot-swatch');
+  ci.addEventListener('input',()=>{ color.hex=ci.value; sw.style.background=color.hex; renderPreview(); renderEffectPreview(); update3DFromState(); });
+  ri.addEventListener('input',()=>{ color.pct=parseInt(ri.value); pl.textContent=`${color.pct}%`; ri.style.setProperty('--pct',`${color.pct}%`); renderPreview(); renderEffectPreview(); update3DFromState(); });
+  el.querySelector('.slot-remove').addEventListener('click',()=>{
+    if(state.colors.length<=1){showToast('Need at least one colour!');return;}
+    state.colors=state.colors.filter(c=>c.id!==color.id);
+    el.style.transition='.18s'; el.style.opacity='0'; el.style.transform='translateX(-12px)';
+    setTimeout(()=>buildColorSlots(),180);
   });
-
-  rangeInput.addEventListener('input', () => {
-    color.pct = parseInt(rangeInput.value);
-    pctLabel.textContent = `${color.pct}%`;
-    rangeInput.style.setProperty('--pct', `${color.pct}%`);
-    renderPreview();
-    renderEffectPreview();
-  });
-
-  removeBtn.addEventListener('click', () => {
-    if (state.colors.length <= 1) { showToast('Need at least one color!'); return; }
-    state.colors = state.colors.filter(c => c.id !== color.id);
-    el.style.opacity = '0';
-    el.style.transform = 'translateX(-20px)';
-    el.style.transition = '0.2s ease';
-    setTimeout(() => buildColorSlots(), 200);
-  });
-
   return el;
 }
 
-document.getElementById('btn-add-color')?.addEventListener('click', () => {
-  if (state.colors.length >= 8) { showToast('Maximum 8 colors!'); return; }
-  state.colors.push({ id: uid(), hex: randomHex(), pct: 50 });
-  buildColorSlots();
+document.getElementById('btn-add-color')?.addEventListener('click',()=>{
+  if(state.colors.length>=8){showToast('Maximum 8 colours!');return;}
+  state.colors.push({id:uid(),hex:randomHex(),pct:50}); buildColorSlots();
+});
+document.getElementById('btn-clear')?.addEventListener('click',()=>{ state.colors=[{id:uid(),hex:'#ffffff',pct:100}]; buildColorSlots(); });
+document.getElementById('btn-random')?.addEventListener('click',()=>{
+  const n=Math.floor(Math.random()*4)+2;
+  state.colors=Array.from({length:n},()=>({id:uid(),hex:randomHex(),pct:Math.floor(Math.random()*80)+10}));
+  buildColorSlots(); triggerRipple(); update3DFromState();
+});
+document.getElementById('btn-complement')?.addEventListener('click',()=>{
+  if(!state.colors.length) return;
+  const base=state.colors[0].hex, comp=complementHex(base);
+  state.colors=[{id:uid(),hex:base,pct:50},{id:uid(),hex:comp,pct:50}];
+  buildColorSlots(); showToast('Complementary pair generated');
 });
 
-document.getElementById('btn-clear')?.addEventListener('click', () => {
-  state.colors = [{ id: uid(), hex: '#ffffff', pct: 100 }];
-  buildColorSlots();
-});
+function randomHex(){return '#'+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0');}
 
-document.getElementById('btn-random')?.addEventListener('click', () => {
-  const count = Math.floor(Math.random() * 4) + 2;
-  state.colors = Array.from({ length: count }, () => ({
-    id: uid(),
-    hex: randomHex(),
-    pct: Math.floor(Math.random() * 80) + 10,
-  }));
-  buildColorSlots();
-  triggerRipple();
-});
-
-function randomHex() {
-  return '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0');
-}
-
-function normalizePercentages() {
-  // Display only — mixing math uses raw weights
-}
-
-// ---- PREVIEW RENDER ----
-
+// ---- RENDER PREVIEW ----
 function renderPreview() {
-  const canvas = document.getElementById('preview-canvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
-  const rgb = getMixedColor();
-
-  if (state.activeEffect && state.activeEffect.id !== 'none') {
-    const t = performance.now() / 1000;
-    state.activeEffect.render(ctx, w, h, rgb, state.effectParams, t);
+  const ctx = getPreviewCtx();
+  if (!ctx) return;
+  const [W,H] = getPreviewSize();
+  const rgb = getMix();
+  const t = performance.now()/1000;
+  if (state.activeEffect && state.activeEffect.id!=='none') {
+    state.activeEffect.render(ctx,W,H,rgb,state.effectParams,t,state.lighting);
   } else {
-    // Flat color with subtle gradient
-    const grad = ctx.createRadialGradient(w * 0.3, h * 0.25, 0, w * 0.5, h * 0.5, w * 0.7);
-    const hex = rgbToHex(...rgb);
-    const [r, g, b] = rgb;
-    const lighter = rgbToHex(Math.min(255, r + 30), Math.min(255, g + 30), Math.min(255, b + 30));
-    const darker = rgbToHex(Math.max(0, r - 20), Math.max(0, g - 20), Math.max(0, b - 20));
-    grad.addColorStop(0, lighter);
-    grad.addColorStop(0.6, hex);
-    grad.addColorStop(1, darker);
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
+    const gr=ctx.createRadialGradient(W*0.3,H*0.25,0,W*0.5,H*0.5,W*0.72);
+    const hex=rgbToHex(...rgb);
+    const [r,g,b]=rgb;
+    gr.addColorStop(0,rgbToHex(Math.min(255,r+28),Math.min(255,g+28),Math.min(255,b+28)));
+    gr.addColorStop(0.6,hex); gr.addColorStop(1,rgbToHex(Math.max(0,r-18),Math.max(0,g-18),Math.max(0,b-18)));
+    ctx.fillStyle=gr; ctx.fillRect(0,0,W,H);
   }
-
   updateColorMeta(rgb);
 }
 
-function updateColorMeta(rgb) {
-  const [r, g, b] = rgb;
-  const hex = rgbToHex(r, g, b);
-  const [h, s, l] = rgbToHsl(r, g, b);
-  document.getElementById('hex-value').textContent = hex.toUpperCase();
-  document.getElementById('rgb-value').textContent = `${r}, ${g}, ${b}`;
-  document.getElementById('hsl-value').textContent = `${h}°, ${s}%, ${l}%`;
-
-  // Animate the canvas border color
-  const canvas = document.getElementById('preview-canvas');
-  if (canvas) canvas.style.boxShadow = `0 0 0 3px ${hex}40, 0 8px 32px ${hex}30`;
+function renderEffectPreview() {
+  const ctx = getEffectCtx();
+  if (!ctx) return;
+  const [W,H] = getEffectSize();
+  const rgb = getMix();
+  const t = performance.now()/1000;
+  if (state.activeEffect) {
+    state.activeEffect.render(ctx,W,H,rgb,state.effectParams,t,state.lighting);
+    document.getElementById('effect-name-badge').textContent=state.activeEffect.name;
+  } else {
+    ctx.fillStyle=rgbToHex(...rgb); ctx.fillRect(0,0,W,H);
+    document.getElementById('effect-name-badge').textContent='No Effect';
+  }
 }
 
-// Ripple on click
-document.getElementById('preview-canvas')?.addEventListener('click', (e) => {
-  triggerRipple(e);
-});
+function updateColorMeta(rgb) {
+  const [r,g,b]=rgb, hex=rgbToHex(r,g,b);
+  const [h,s,l]=rgbToHsl(r,g,b);
+  document.getElementById('hex-value').textContent=hex.toUpperCase();
+  document.getElementById('rgb-value').textContent=`${r}, ${g}, ${b}`;
+  document.getElementById('hsl-value').textContent=`${h}°, ${s}%, ${l}%`;
+  const cv=getPreviewCanvas();
+  if(cv) cv.style.boxShadow=`0 0 0 3px ${hex}40, 0 8px 28px ${hex}25`;
+}
 
+// Ripple
+getPreviewCanvas()?.addEventListener('click',e=>triggerRipple(e));
 function triggerRipple(e) {
-  const overlay = document.getElementById('preview-ripple');
-  if (!overlay) return;
-  const rect = overlay.getBoundingClientRect();
-  const x = e ? e.clientX - rect.left : rect.width / 2;
-  const y = e ? e.clientY - rect.top : rect.height / 2;
-  const rgb = getMixedColor();
-  const hex = rgbToHex(...rgb);
-  const circle = document.createElement('div');
-  circle.className = 'ripple-circle';
-  circle.style.cssText = `
-    left: ${x}px;
-    top: ${y}px;
-    width: 80px;
-    height: 80px;
-    margin-left: -40px;
-    margin-top: -40px;
-    background: ${hex};
-    opacity: 0.5;
-  `;
-  overlay.appendChild(circle);
-  setTimeout(() => circle.remove(), 700);
+  const overlay=document.getElementById('preview-ripple');
+  if(!overlay) return;
+  const rect=overlay.getBoundingClientRect();
+  const x=e?e.clientX-rect.left:rect.width/2, y=e?e.clientY-rect.top:rect.height/2;
+  const hex=rgbToHex(...getMix());
+  const c=document.createElement('div');
+  c.className='ripple-circle';
+  c.style.cssText=`left:${x}px;top:${y}px;width:80px;height:80px;margin-left:-40px;margin-top:-40px;background:${hex};opacity:.5;`;
+  overlay.appendChild(c); setTimeout(()=>c.remove(),700);
 }
 
 // Copy hex
-document.getElementById('btn-copy-hex')?.addEventListener('click', () => {
-  const hex = document.getElementById('hex-value').textContent;
-  navigator.clipboard.writeText(hex).then(() => showToast(`Copied ${hex}`));
+document.getElementById('btn-copy-hex')?.addEventListener('click',()=>{
+  const hex=document.getElementById('hex-value').textContent;
+  navigator.clipboard.writeText(hex).then(()=>showToast(`Copied ${hex}`));
 });
 
-// ---- ANIMATED RENDER LOOP (for animated effects) ----
+// ---- ZOOM ----
+let zoomLevel = 1;
+document.getElementById('tool-zoom-in')?.addEventListener('click',()=>{ zoomLevel=Math.min(4,zoomLevel+0.25); applyZoom(); });
+document.getElementById('tool-zoom-out')?.addEventListener('click',()=>{ zoomLevel=Math.max(0.5,zoomLevel-0.25); applyZoom(); });
+document.getElementById('tool-zoom-fit')?.addEventListener('click',()=>{ zoomLevel=1; applyZoom(); });
+function applyZoom() {
+  const c=getPreviewCanvas(); if(!c) return;
+  c.style.transform=`scale(${zoomLevel})`;
+  const zi=document.getElementById('zoom-indicator');
+  if(zi){zi.textContent=Math.round(zoomLevel*100)+'%'; zi.classList.add('visible'); setTimeout(()=>zi.classList.remove('visible'),1200);}
+}
+// Scroll zoom
+document.getElementById('preview-wrap')?.addEventListener('wheel',e=>{
+  e.preventDefault();
+  zoomLevel=Math.max(0.5,Math.min(4,zoomLevel-(e.deltaY>0?.15:-.15)));
+  applyZoom();
+},{passive:false});
 
-let animatedEffects = new Set(['kristall', 'metallic', 'pearl', 'glitter', 'mica', 'galaxy', 'marble', 'watercolor']);
+// Download
+document.getElementById('tool-download')?.addEventListener('click',()=>{
+  const c=getPreviewCanvas(); if(!c) return;
+  const link=document.createElement('a');
+  link.download=`paint-mix-${Date.now()}.png`; link.href=c.toDataURL('image/png'); link.click();
+  showToast('Downloaded!');
+});
 
-function startAnimatedLoop() {
+// ---- ANIMATION LOOP ----
+function startLoop() {
   cancelAnimationFrame(state.animFrame);
   function loop() {
-    if (state.activeEffect && animatedEffects.has(state.activeEffect.id)) {
-      renderPreview();
-      renderEffectPreview();
+    if(state.activeEffect && ANIMATED_EFFECTS.has(state.activeEffect.id)) {
+      renderPreview(); renderEffectPreview();
     }
-    state.animFrame = requestAnimationFrame(loop);
+    state.animFrame=requestAnimationFrame(loop);
   }
-  state.animFrame = requestAnimationFrame(loop);
+  state.animFrame=requestAnimationFrame(loop);
 }
 
-// ---- EFFECT PREVIEW ----
-
-function renderEffectPreview() {
-  const canvas = document.getElementById('effect-preview-canvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
-  const rgb = getMixedColor();
-  const t = performance.now() / 1000;
-
-  if (state.activeEffect) {
-    state.activeEffect.render(ctx, w, h, rgb, state.effectParams, t);
-    document.getElementById('effect-name-badge').textContent = state.activeEffect.name;
-  } else {
-    ctx.fillStyle = rgbToHex(...rgb);
-    ctx.fillRect(0, 0, w, h);
-    document.getElementById('effect-name-badge').textContent = 'No Effect';
-  }
-}
+// ---- LIGHTING CONTROLS ----
+['light-angle','light-intensity','ambient-light'].forEach(id=>{
+  document.getElementById(id)?.addEventListener('input',e=>{
+    const key={['light-angle']:'angle',['light-intensity']:'intensity',['ambient-light']:'ambient'}[id];
+    state.lighting[key]=parseInt(e.target.value);
+    renderPreview(); renderEffectPreview(); update3DFromState();
+  });
+});
 
 // ---- EFFECTS GRID ----
-
+let effectsBuilt=false;
 function buildEffectsGrid() {
-  const grid = document.getElementById('effects-grid');
-  if (!grid || grid.dataset.built) return;
-  grid.dataset.built = '1';
-
-  EFFECTS.forEach((effect, idx) => {
-    const card = document.createElement('button');
-    card.className = 'effect-card';
-    card.style.animationDelay = `${idx * 30}ms`;
-    card.dataset.effectId = effect.id;
-    if (state.activeEffect?.id === effect.id) card.classList.add('selected');
-
-    const canvas = document.createElement('canvas');
-    canvas.className = 'effect-card-canvas';
-    canvas.width = 160;
-    canvas.height = 160;
-    card.appendChild(canvas);
-
-    const body = document.createElement('div');
-    body.className = 'effect-card-body';
-    body.innerHTML = `
-      <div class="effect-card-name">${effect.name}</div>
-      <div class="effect-card-desc">${effect.desc}</div>
-      <span class="effect-card-badge">${effect.category}</span>
-    `;
-    card.appendChild(body);
+  if(effectsBuilt) return;
+  effectsBuilt=true;
+  const grid=document.getElementById('effects-grid');
+  EFFECTS.forEach((effect,idx)=>{
+    const card=document.createElement('button');
+    card.className='effect-card'; card.dataset.effectId=effect.id; card.dataset.cat=effect.category;
+    card.style.animationDelay=`${idx*25}ms`;
+    if(state.activeEffect?.id===effect.id) card.classList.add('selected');
+    // Build card body first, then append canvas AFTER (avoids innerHTML+ destroying canvas ref)
+    card.insertAdjacentHTML('beforeend',`<div class="effect-card-body"><div class="effect-card-name">${effect.name}</div><div class="effect-card-desc">${effect.desc}</div><span class="effect-card-badge">${effect.category}</span></div>`);
+    const canvas=document.createElement('canvas');
+    canvas.className='effect-card-canvas';
+    card.insertBefore(canvas,card.firstChild); // prepend canvas before body text
     grid.appendChild(card);
+    // Render thumbnail: wait for layout with double RAF + stagger, then paint at HiDPI
+    function renderCardThumb() {
+      const rect=canvas.getBoundingClientRect();
+      const w=rect.width>4?rect.width:191;
+      const dpr=window.devicePixelRatio||1;
+      canvas.width=Math.round(w*dpr); canvas.height=Math.round(w*0.6*dpr);
+      canvas.style.width='100%'; canvas.style.height='auto';
+      const tctx=canvas.getContext('2d'); tctx.scale(dpr,dpr);
+      const defParams={}; effect.params.forEach(p=>{ defParams[p.id]=p.default; });
+      try { effect.render(tctx,w,w*0.6,getMix(),defParams,0); } catch(e){}
+    }
+    // Stagger rendering to avoid layout jank: double RAF ensures card is in DOM and measured
+    requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(()=>renderCardThumb(), idx*8)));
+    card.addEventListener('click',()=>selectEffect(effect,card));
+  });
 
-    // Render thumbnail
-    const rgb = getMixedColor();
-    const ctx = canvas.getContext('2d');
-    const defaultParams = {};
-    effect.params.forEach(p => { defaultParams[p.id] = p.default; });
-    effect.render(ctx, 160, 160, rgb, defaultParams, 0);
-
-    card.addEventListener('click', () => {
-      selectEffect(effect, card);
+  // Filter
+  document.querySelectorAll('.filter-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      const cat=btn.dataset.cat;
+      document.querySelectorAll('.effect-card').forEach(c=>{
+        c.classList.toggle('hidden',cat!=='All'&&c.dataset.cat!==cat);
+      });
     });
   });
 }
 
 function selectEffect(effect, card) {
-  // Deselect all
-  document.querySelectorAll('.effect-card').forEach(c => c.classList.remove('selected'));
+  document.querySelectorAll('.effect-card').forEach(c=>c.classList.remove('selected'));
   card?.classList.add('selected');
-
-  state.activeEffect = effect;
-  // Reset params to defaults
-  state.effectParams = {};
-  effect.params.forEach(p => { state.effectParams[p.id] = p.default; });
-
+  state.activeEffect=effect;
+  state.effectParams={};
+  effect.params.forEach(p=>{ state.effectParams[p.id]=p.default; });
   buildEffectParams(effect);
-  renderEffectPreview();
-  renderPreview();
-
+  // Show/hide lighting
+  const lc=document.getElementById('light-controls');
+  if(lc) lc.style.display=effect.id!=='none'?'flex':'none';
+  renderEffectPreview(); renderPreview(); update3DFromState();
   showToast(`Effect: ${effect.name}`);
-
-  // Switch to mixer tab
   document.querySelector('.nav-pill[data-section="mixer"]')?.click();
 }
 
 function buildEffectParams(effect) {
-  const container = document.getElementById('effect-params');
-  container.innerHTML = '';
-
-  if (!effect || effect.id === 'none' || !effect.params.length) {
-    container.innerHTML = '<p class="no-effect-hint">No parameters for this effect.</p>';
-    return;
-  }
-
-  effect.params.forEach(param => {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    row.innerHTML = `
-      <label class="param-label" for="param-${param.id}">${param.label}</label>
-      <input type="range" class="param-range" id="param-${param.id}"
-        min="${param.min}" max="${param.max}" value="${state.effectParams[param.id] ?? param.default}">
-    `;
-    container.appendChild(row);
-
-    const input = row.querySelector('input');
-    input.addEventListener('input', () => {
-      state.effectParams[param.id] = parseInt(input.value);
-      renderEffectPreview();
-      renderPreview();
-    });
+  const container=document.getElementById('effect-params');
+  container.innerHTML='';
+  if(!effect||!effect.params.length){ container.innerHTML='<p class="no-effect-hint">No parameters for this effect.</p>'; return; }
+  effect.params.forEach(param=>{
+    const row=document.createElement('div'); row.className='param-row';
+    if(param.type==='color') {
+      const val=state.effectParams[param.id]||param.default;
+      row.innerHTML=`<label class="param-label">${param.label}</label><div class="param-color-row"><div class="param-color-swatch" style="background:${val}"><input type="color" class="param-color-input" value="${val}"></div></div>`;
+      container.appendChild(row);
+      row.querySelector('.param-color-input').addEventListener('input',e=>{
+        state.effectParams[param.id]=e.target.value;
+        row.querySelector('.param-color-swatch').style.background=e.target.value;
+        renderEffectPreview(); renderPreview(); update3DFromState();
+      });
+    } else if(param.type==='select') {
+      const val=state.effectParams[param.id]||param.default;
+      row.innerHTML=`<label class="param-label">${param.label}</label><select class="param-select">${param.options.map(o=>`<option${o===val?' selected':''}>${o}</option>`).join('')}</select>`;
+      container.appendChild(row);
+      row.querySelector('select').addEventListener('change',e=>{
+        state.effectParams[param.id]=e.target.value;
+        renderEffectPreview(); renderPreview();
+      });
+    } else {
+      const val=state.effectParams[param.id]??param.default;
+      row.innerHTML=`<label class="param-label">${param.label}</label><input type="range" class="param-range" min="${param.min}" max="${param.max}" value="${val}">`;
+      container.appendChild(row);
+      row.querySelector('input').addEventListener('input',e=>{
+        state.effectParams[param.id]=parseInt(e.target.value);
+        renderEffectPreview(); renderPreview(); update3DFromState();
+      });
+    }
   });
 }
 
-// ---- SAVED PALETTE ----
-
-document.getElementById('btn-save')?.addEventListener('click', () => {
-  const rgb = getMixedColor();
-  const hex = rgbToHex(...rgb);
-  const effectName = state.activeEffect?.name || 'No Effect';
-
-  const item = {
-    id: uid(),
-    hex,
-    rgb,
-    effect: effectName,
-    colors: state.colors.map(c => ({ ...c })),
-  };
-
-  state.savedPalette.push(item);
-  renderSavedPalette();
-  showToast(`Saved ${hex.toUpperCase()}`);
-
-  // Flash animation on button
-  const btn = document.getElementById('btn-save');
-  btn.style.background = 'var(--color-success)';
-  setTimeout(() => { btn.style.background = ''; }, 1000);
+// ---- SAVE / PALETTE ----
+document.getElementById('btn-save')?.addEventListener('click',()=>{
+  const rgb=getMix(), hex=rgbToHex(...rgb);
+  state.savedPalette.push({id:uid(),hex,rgb,effect:state.activeEffect?.name||'No Effect',colors:state.colors.map(c=>({...c}))});
+  renderSavedPalette(); showToast(`Saved ${hex.toUpperCase()}`);
+  const btn=document.getElementById('btn-save');
+  btn.style.background='var(--color-success)'; setTimeout(()=>btn.style.background='',900);
 });
-
 function renderSavedPalette() {
-  const empty = document.getElementById('palette-empty');
-  const grid = document.getElementById('palette-grid');
-  if (!empty || !grid) return;
-
-  empty.style.display = state.savedPalette.length ? 'none' : 'flex';
-  grid.innerHTML = '';
-
-  state.savedPalette.forEach(item => {
-    const el = document.createElement('div');
-    el.className = 'palette-item';
-    el.innerHTML = `
-      <canvas class="palette-swatch" width="120" height="120" aria-label="Color ${item.hex}"></canvas>
-      <div class="palette-item-body">
-        <span class="palette-item-hex">${item.hex.toUpperCase()}</span>
-        <button class="palette-item-delete" data-id="${item.id}" aria-label="Delete">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/>
-          </svg>
-        </button>
-      </div>
-    `;
-
-    // Render swatch canvas
-    const swatchCanvas = el.querySelector('.palette-swatch');
-    const swCtx = swatchCanvas.getContext('2d');
-    const effect = EFFECTS.find(e => e.name === item.effect);
-    if (effect) {
-      const params = {};
-      effect.params.forEach(p => { params[p.id] = p.default; });
-      effect.render(swCtx, 120, 120, item.rgb, params, 0);
-    } else {
-      swCtx.fillStyle = item.hex;
-      swCtx.fillRect(0, 0, 120, 120);
-    }
-
-    // Click to reload
-    swatchCanvas.addEventListener('click', () => {
-      state.colors = item.colors.map(c => ({ ...c, id: uid() }));
-      buildColorSlots();
-      showToast(`Loaded ${item.hex.toUpperCase()}`);
-      document.querySelector('.nav-pill[data-section="mixer"]')?.click();
-    });
-
-    // Delete
-    el.querySelector('.palette-item-delete')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      state.savedPalette = state.savedPalette.filter(p => p.id !== item.id);
-      renderSavedPalette();
-    });
-
+  const empty=document.getElementById('palette-empty'), grid=document.getElementById('palette-grid');
+  if(!empty||!grid) return;
+  empty.style.display=state.savedPalette.length?'none':'flex';
+  grid.innerHTML='';
+  state.savedPalette.forEach(item=>{
+    const el=document.createElement('div'); el.className='palette-item';
+    el.innerHTML=`<canvas class="palette-swatch" width="120" height="120"></canvas><div class="palette-item-body"><span class="palette-item-hex">${item.hex.toUpperCase()}</span><button class="palette-item-delete"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg></button></div>`;
+    const sw=el.querySelector('.palette-swatch'), swCtx=sw.getContext('2d');
+    const effect=EFFECTS.find(e=>e.name===item.effect);
+    if(effect){ const p={}; effect.params.forEach(pp=>p[pp.id]=pp.default); effect.render(swCtx,120,120,item.rgb,p,0); }
+    else { swCtx.fillStyle=item.hex; swCtx.fillRect(0,0,120,120); }
+    sw.addEventListener('click',()=>{ state.colors=item.colors.map(c=>({...c,id:uid()})); buildColorSlots(); showToast(`Loaded ${item.hex.toUpperCase()}`); document.querySelector('.nav-pill[data-section="mixer"]')?.click(); });
+    el.querySelector('.palette-item-delete')?.addEventListener('click',e=>{ e.stopPropagation(); state.savedPalette=state.savedPalette.filter(p=>p.id!==item.id); renderSavedPalette(); });
     grid.appendChild(el);
   });
 }
 
-// ---- TOAST ----
+// ---- THREE.JS 3D PREVIEW ----
+let threeInitialized=false, threeRenderer=null, threeScene=null, threeCamera=null;
+let threeMesh=null, threeEnvLight=null, threePointLight=null;
+let threeMat=null;
+let isDragging=false, lastX=0, lastY=0, rotX=0.25, rotY=0.5, distance=4.2;
+let autoSpin=false, spinFrame=null;
+let currentModel='car', currentEnv='studio';
 
-let toastTimer = null;
+function initThreeJS() {
+  if(threeInitialized) return;
+  if(typeof THREE==='undefined') { console.warn('Three.js not loaded'); return; }
+  threeInitialized=true;
+  const canvas=document.getElementById('three-canvas');
+  const wrap=document.getElementById('preview3d-wrap');
+  if(!canvas||!wrap) return;
+  const W=wrap.clientWidth||800, H=wrap.clientHeight||450;
+
+  threeRenderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false});
+  threeRenderer.setPixelRatio(window.devicePixelRatio||1);
+  threeRenderer.setSize(W,H);
+  threeRenderer.shadowMap.enabled=true;
+  threeRenderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  threeRenderer.toneMapping=THREE.ACESFilmicToneMapping;
+  threeRenderer.toneMappingExposure=1.2;
+
+  threeScene=new THREE.Scene();
+  threeCamera=new THREE.PerspectiveCamera(45,W/H,0.1,100);
+  threeCamera.position.set(0,0.6,distance);
+
+  // Lights
+  const ambient=new THREE.AmbientLight(0xffffff,0.5); threeScene.add(ambient); threeEnvLight=ambient;
+  threePointLight=new THREE.DirectionalLight(0xffffff,2);
+  threePointLight.position.set(3,5,3); threePointLight.castShadow=true;
+  threeScene.add(threePointLight);
+  const fill=new THREE.DirectionalLight(0xffffff,0.4); fill.position.set(-3,2,-3); threeScene.add(fill);
+  const rim=new THREE.DirectionalLight(0xffffff,0.6); rim.position.set(0,3,-4); threeScene.add(rim);
+
+  // Floor
+  const floorGeo=new THREE.PlaneGeometry(20,20);
+  const floorMat=new THREE.MeshStandardMaterial({color:0x222222,roughness:0.9,metalness:0.1});
+  const floor=new THREE.Mesh(floorGeo,floorMat); floor.rotation.x=-Math.PI/2; floor.position.y=-1.1; floor.receiveShadow=true;
+  threeScene.add(floor);
+
+  buildModel('car');
+  setEnvironment('studio');
+  startThreeLoop();
+
+  // Mouse/touch controls
+  canvas.addEventListener('mousedown',e=>{isDragging=true;lastX=e.clientX;lastY=e.clientY;});
+  window.addEventListener('mousemove',e=>{ if(!isDragging) return; rotY+=(e.clientX-lastX)*0.008; rotX+=(e.clientY-lastY)*0.008; rotX=Math.max(-1.2,Math.min(1.2,rotX)); lastX=e.clientX; lastY=e.clientY; });
+  window.addEventListener('mouseup',()=>isDragging=false);
+  canvas.addEventListener('wheel',e=>{ distance=Math.max(1.5,Math.min(8,distance+e.deltaY*0.005)); e.preventDefault(); },{passive:false});
+  canvas.addEventListener('touchstart',e=>{ isDragging=true; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; },{passive:true});
+  canvas.addEventListener('touchmove',e=>{ if(!isDragging) return; rotY+=(e.touches[0].clientX-lastX)*0.01; rotX+=(e.touches[0].clientY-lastY)*0.01; rotX=Math.max(-1.2,Math.min(1.2,rotX)); lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; },{passive:true});
+  canvas.addEventListener('touchend',()=>isDragging=false);
+
+  // Hide hint after first interaction
+  canvas.addEventListener('mousedown',()=>{ document.getElementById('canvas3d-hint')?.classList.add('hidden'); },{once:true});
+
+  // Resize
+  new ResizeObserver(()=>{ if(!threeRenderer||!threeCamera) return; const w=wrap.clientWidth,h=wrap.clientHeight; threeRenderer.setSize(w,h); threeCamera.aspect=w/h; threeCamera.updateProjectionMatrix(); }).observe(wrap);
+}
+
+function buildModel(type) {
+  // Remove old group/mesh
+  if(threeMesh) { threeScene.remove(threeMesh); threeMesh=null; }
+  const rgb=getMix(), hex=rgbToHex(...rgb);
+  // Read slider values if available, else use defaults
+  const rough=(document.getElementById('3d-roughness')?.value??30)/100;
+  const metal=(document.getElementById('3d-metalness')?.value??20)/100;
+  const cc=(document.getElementById('3d-clearcoat')?.value??80)/100;
+
+  // Build canvas texture at 512x512
+  const texCanvas=document.createElement('canvas');
+  texCanvas.width=512; texCanvas.height=512;
+  const texCtx=texCanvas.getContext('2d');
+  if(state.activeEffect&&state.activeEffect.id!=='none') {
+    state.activeEffect.render(texCtx,512,512,rgb,state.effectParams,performance.now()/1000,state.lighting);
+  } else {
+    texCtx.fillStyle=hex; texCtx.fillRect(0,0,512,512);
+  }
+  const texture=new THREE.CanvasTexture(texCanvas);
+  texture.wrapS=THREE.RepeatWrapping; texture.wrapT=THREE.RepeatWrapping;
+  texture.repeat.set(type==='sphere'?1:2,type==='sphere'?1:2);
+
+  threeMat=new THREE.MeshPhysicalMaterial({
+    map:texture, roughness:rough, metalness:metal,
+    clearcoat:cc, clearcoatRoughness:0.1,
+    envMapIntensity:1.2,
+  });
+
+  currentModel=type;
+
+  if(type==='sphere') {
+    // Simple mesh for sphere
+    const geo=new THREE.SphereGeometry(1,64,64);
+    threeMesh=new THREE.Mesh(geo,threeMat);
+    threeMesh.castShadow=true; threeMesh.receiveShadow=true;
+    threeScene.add(threeMesh);
+  } else {
+    // Car/motorbike/helmet builders return THREE.Group — add directly
+    let group;
+    if(type==='car') group=buildCarGeometry();
+    else if(type==='motorbike') group=buildMotorbikeGeometry();
+    else if(type==='helmet') group=buildHelmetGeometry();
+    else group=new THREE.Group();
+    // Apply threeMat to all mesh children that use a placeholder material
+    group.traverse(child=>{
+      if(child.isMesh && child.material===threeMat) {
+        child.material=threeMat;
+      }
+    });
+    threeMesh=group; // store reference for removal later
+    threeScene.add(threeMesh);
+  }
+}
+
+function buildCarGeometry() {
+  const group=new THREE.Group();
+  // Body
+  const bodyGeo=new THREE.BoxGeometry(2.4,0.5,1.1);
+  const body=new THREE.Mesh(bodyGeo,threeMat); body.position.y=0.15; body.castShadow=true;
+  group.add(body);
+  // Cabin
+  const cabinGeo=new THREE.BoxGeometry(1.3,0.45,0.95);
+  const cabin=new THREE.Mesh(cabinGeo,threeMat); cabin.position.set(0.05,0.57,0); cabin.castShadow=true;
+  group.add(cabin);
+  // Hood slope
+  const hoodShape=new THREE.Shape();
+  hoodShape.moveTo(0,0); hoodShape.lineTo(0.7,0); hoodShape.lineTo(0.7,0.15); hoodShape.lineTo(0,0.45); hoodShape.closePath();
+  const hoodGeo=new THREE.ExtrudeGeometry(hoodShape,{depth:0.95,bevelEnabled:false});
+  const hood=new THREE.Mesh(hoodGeo,threeMat); hood.position.set(0.65,-0.1,-0.475); hood.rotation.y=0; hood.castShadow=true;
+  group.add(hood);
+  // Wheels
+  const wheelGeo=new THREE.CylinderGeometry(0.28,0.28,0.18,32);
+  const wheelMat=new THREE.MeshStandardMaterial({color:0x111111,roughness:0.9});
+  [[-0.85,-0.2,0.6],[0.85,-0.2,0.6],[-0.85,-0.2,-0.6],[0.85,-0.2,-0.6]].forEach(([x,y,z])=>{
+    const w=new THREE.Mesh(wheelGeo,wheelMat); w.rotation.z=Math.PI/2; w.position.set(x,y,z); w.castShadow=true; group.add(w);
+    // Hubcap
+    const hubGeo=new THREE.CylinderGeometry(0.12,0.12,0.19,16);
+    const hubMat=new THREE.MeshStandardMaterial({color:0xcccccc,metalness:0.9,roughness:0.2});
+    const hub=new THREE.Mesh(hubGeo,hubMat); hub.rotation.z=Math.PI/2; hub.position.set(x,y,z); group.add(hub);
+  });
+  // Merge into one mesh using BufferGeometry
+  const merged=new THREE.BufferGeometry();
+  // For simplicity return group wrapped as a single object
+  const wrapper=new THREE.Group(); wrapper.add(group);
+  wrapper.position.y=0.28;
+  return group; // return the group
+}
+
+function buildMotorbikeGeometry() {
+  const group=new THREE.Group();
+  // Frame
+  const frameGeo=new THREE.BoxGeometry(1.8,0.18,0.18);
+  const frame=new THREE.Mesh(frameGeo,threeMat); frame.position.y=0.2; frame.castShadow=true; group.add(frame);
+  // Engine block
+  const engGeo=new THREE.BoxGeometry(0.45,0.38,0.35);
+  const eng=new THREE.Mesh(engGeo,threeMat); eng.position.set(0,0.1,0); eng.castShadow=true; group.add(eng);
+  // Tank
+  const tankGeo=new THREE.BoxGeometry(0.6,0.28,0.32);
+  const tank=new THREE.Mesh(tankGeo,threeMat); tank.position.set(0.05,0.42,0); tank.castShadow=true; group.add(tank);
+  // Seat
+  const seatGeo=new THREE.BoxGeometry(0.65,0.1,0.25);
+  const seat=new THREE.Mesh(seatGeo,new THREE.MeshStandardMaterial({color:0x111111,roughness:0.95}));
+  seat.position.set(-0.2,0.52,0); group.add(seat);
+  // Wheels
+  const wheelGeo=new THREE.TorusGeometry(0.35,0.1,16,40);
+  const wheelMat=new THREE.MeshStandardMaterial({color:0x111111,roughness:0.9});
+  [[0.75,0],[-0.75,0]].forEach(([x,z])=>{ const w=new THREE.Mesh(wheelGeo,wheelMat); w.position.set(x,0,z); w.castShadow=true; group.add(w); });
+  // Forks
+  const forkGeo=new THREE.CylinderGeometry(0.025,0.025,0.5,8);
+  [[0.75,0.2,0.1],[0.75,0.2,-0.1]].forEach(([x,y,z])=>{ const f=new THREE.Mesh(forkGeo,new THREE.MeshStandardMaterial({color:0x888888,metalness:0.8,roughness:0.2})); f.position.set(x,y,z); group.add(f); });
+  // Handlebar
+  const hbGeo=new THREE.CylinderGeometry(0.02,0.02,0.6,8);
+  const hb=new THREE.Mesh(hbGeo,new THREE.MeshStandardMaterial({color:0x444444,metalness:0.7,roughness:0.3}));
+  hb.rotation.x=Math.PI/2; hb.position.set(0.75,0.55,0); group.add(hb);
+  group.position.y=0.38;
+  return group;
+}
+
+function buildHelmetGeometry() {
+  const group=new THREE.Group();
+  // Main dome
+  const domeGeo=new THREE.SphereGeometry(0.75,64,64,0,Math.PI*2,0,Math.PI*0.75);
+  const dome=new THREE.Mesh(domeGeo,threeMat); dome.castShadow=true; group.add(dome);
+  // Chin bar
+  const chinGeo=new THREE.TorusGeometry(0.6,0.14,16,32,Math.PI);
+  const chin=new THREE.Mesh(chinGeo,threeMat); chin.rotation.x=Math.PI/2; chin.position.y=-0.3; chin.castShadow=true; group.add(chin);
+  // Visor
+  const visGeo=new THREE.SphereGeometry(0.78,32,32,0.4,Math.PI*2-0.8,0.3,0.9);
+  const visMat=new THREE.MeshPhysicalMaterial({color:0x88aacc,transparent:true,opacity:0.35,roughness:0.05,metalness:0,transmission:0.5,reflectivity:1});
+  const vis=new THREE.Mesh(visGeo,visMat); group.add(vis);
+  // Vents (top of dome)
+  for(let i=0;i<3;i++) {
+    const ventGeo=new THREE.BoxGeometry(0.12,0.04,0.08);
+    const vent=new THREE.Mesh(ventGeo,new THREE.MeshStandardMaterial({color:0x111111,roughness:0.9}));
+    const angle=(-0.2+i*0.2); // spread along dome top
+    vent.position.set(Math.sin(angle)*0.5, 0.6+Math.cos(angle)*0.35, Math.cos(angle)*0.5-0.3);
+    vent.rotation.x=angle; group.add(vent);
+  }
+  group.position.y=0.4;
+  return group;
+}
+
+function setEnvironment(env) {
+  currentEnv=env;
+  if(!threeScene) return;
+  const envs={
+    studio:{bg:0x1a1a1a,ambient:0.5,light:2,skyColor:0xffffff},
+    outdoor:{bg:0x87ceeb,ambient:0.9,light:1.8,skyColor:0xffeedd},
+    showroom:{bg:0x0d0d0d,ambient:0.3,light:2.5,skyColor:0xffffff},
+    night:{bg:0x020408,ambient:0.15,light:1.2,skyColor:0x4488ff},
+  };
+  const cfg=envs[env]||envs.studio;
+  threeScene.background=new THREE.Color(cfg.bg);
+  if(threeEnvLight) threeEnvLight.intensity=cfg.ambient;
+  if(threePointLight) threePointLight.intensity=cfg.light;
+  if(threeRenderer) threeRenderer.toneMappingExposure=env==='night'?1.8:1.2;
+}
+
+function startThreeLoop() {
+  function loop() {
+    requestAnimationFrame(loop);
+    if(!threeRenderer||!threeScene||!threeCamera) return;
+    const angle3d=((document.getElementById('3d-light-angle')?.value||45)*Math.PI)/180;
+    const height3d=(document.getElementById('3d-light-height')?.value||70)/100*5;
+    if(threePointLight) { threePointLight.position.set(Math.cos(angle3d)*4,height3d,Math.sin(angle3d)*4); }
+
+    if(autoSpin) { rotY+=0.008; }
+    if(threeMesh) {
+      const group=threeMesh;
+      group.rotation.x=rotX;
+      group.rotation.y=rotY;
+    }
+    threeCamera.position.set(0,0.6,distance);
+    threeCamera.lookAt(0,0.3,0);
+    threeRenderer.render(threeScene,threeCamera);
+  }
+  requestAnimationFrame(loop);
+}
+
+function update3DFromState() {
+  if(!threeInitialized||!threeMat) return;
+  // Update texture
+  const rgb=getMix(), hex=rgbToHex(...rgb);
+  const texCanvas=document.createElement('canvas');
+  texCanvas.width=512; texCanvas.height=512;
+  const texCtx=texCanvas.getContext('2d');
+  if(state.activeEffect&&state.activeEffect.id!=='none') {
+    // animated texture: use current time
+    state.activeEffect.render(texCtx,512,512,rgb,state.effectParams,performance.now()/1000,state.lighting);
+  } else {
+    texCtx.fillStyle=hex; texCtx.fillRect(0,0,512,512);
+  }
+  const newTex=new THREE.CanvasTexture(texCanvas);
+  newTex.wrapS=THREE.RepeatWrapping; newTex.wrapT=THREE.RepeatWrapping;
+  newTex.repeat.set(currentModel==='sphere'?1:2,currentModel==='sphere'?1:2);
+  threeMat.map=newTex; threeMat.needsUpdate=true;
+  // Update material params
+  const rough=(document.getElementById('3d-roughness')?.value||30)/100;
+  const metal=(document.getElementById('3d-metalness')?.value||20)/100;
+  const cc=(document.getElementById('3d-clearcoat')?.value||80)/100;
+  threeMat.roughness=rough; threeMat.metalness=metal; threeMat.clearcoat=cc; threeMat.needsUpdate=true;
+}
+
+// 3D UI controls
+document.querySelectorAll('.model-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.model-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    if(threeInitialized) buildModel(btn.dataset.model);
+    else { initThreeJS(); setTimeout(()=>buildModel(btn.dataset.model),200); }
+  });
+});
+document.querySelectorAll('.env-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.env-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active'); setEnvironment(btn.dataset.env);
+  });
+});
+['3d-light-angle','3d-light-height','3d-roughness','3d-metalness','3d-clearcoat'].forEach(id=>{
+  document.getElementById(id)?.addEventListener('input',()=>update3DFromState());
+});
+document.getElementById('btn-3d-reset')?.addEventListener('click',()=>{ rotX=0.25;rotY=0.5;distance=4.2; });
+document.getElementById('btn-3d-spin')?.addEventListener('click',()=>{ autoSpin=!autoSpin; document.getElementById('btn-3d-spin').textContent=autoSpin?'Stop Spin':'Auto Spin'; });
+document.getElementById('btn-3d-screenshot')?.addEventListener('click',()=>{
+  if(!threeRenderer) return;
+  threeRenderer.render(threeScene,threeCamera);
+  const link=document.createElement('a'); link.download=`3d-preview-${Date.now()}.png`; link.href=threeRenderer.domElement.toDataURL(); link.click();
+  showToast('Snapshot saved!');
+});
+
+// ---- TOAST ----
+let toastTimer=null;
 function showToast(msg) {
-  const toast = document.getElementById('toast');
-  if (!toast) return;
-  toast.textContent = msg;
-  toast.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+  const t=document.getElementById('toast'); if(!t) return;
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),2200);
 }
 
 // ---- INIT ----
-
 buildColorSlots();
-buildEffectsGrid();
+const noneEffect=EFFECTS[0];
+state.activeEffect=noneEffect;
+state.effectParams={};
+renderPreview();
 renderEffectPreview();
-startAnimatedLoop();
+startLoop();
 
-// Pre-select "No Effect"
-const noneEffect = EFFECTS.find(e => e.id === 'none');
-state.activeEffect = noneEffect;
-buildEffectParams(noneEffect);
-
-// Hint to open effects
-setTimeout(() => {
-  if (!state.activeEffect || state.activeEffect.id === 'none') {
-    // Keep hint text
-  }
-}, 100);
+// Re-render on resize for HiDPI correctness
+window.addEventListener('resize',()=>{ renderPreview(); renderEffectPreview(); });
