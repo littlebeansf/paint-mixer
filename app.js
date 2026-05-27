@@ -1648,9 +1648,9 @@ function renderSavedPalette() {
     // Actions row
     const actionsDiv=document.createElement('div'); actionsDiv.className='palette-item-actions';
     actionsDiv.innerHTML=`
-      <button class="btn-test3d" title="Test in 3D Preview"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>3D</button>
-      <button class="btn-compare-toggle" title="Select for Compare"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18"/><rect x="14" y="3" width="7" height="18"/></svg>${compareSelected.has(item.id)?'Deselect':'Compare'}</button>
-      <button class="btn-recipe" title="How to recreate"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>Recipe</button>
+      <button class="btn-test3d" title="Test in 3D Preview"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></button>
+      <button class="btn-compare-toggle${compareSelected.has(item.id)?' active':''}" title="${compareSelected.has(item.id)?'Deselect':'Add to Compare'}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18"/><rect x="14" y="3" width="7" height="18"/></svg></button>
+      <button class="btn-recipe" title="Paint Recipe"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg></button>
     `;
     el.appendChild(swCanvas);
     el.appendChild(infoDiv);
@@ -2029,7 +2029,7 @@ let currentModel='car', currentEnv='studio';
 // Per-model camera config: [rotX, rotY, distance, camY, lookAtY]
 const MODEL_CAM = {
   car:       [0.18, 0.5,  4.2, 0.6, 0.15],
-  motorbike: [0.18, 0.8,  4.8, 0.7, 0.45],
+  motorbike: [0.10, -0.65, 4.8, 0.65, 0.55],  // sportbike: 3/4 front-left view
   helmet:    [0.18, 0.5,  4.0, 0.5, 0.15],
   sphere:    [0.15, 0.5,  4.5, 0.9, 0.9],
 };
@@ -2039,7 +2039,7 @@ const MODEL_CAM = {
 // Increase for larger models that appear too small in the viewport.
 const MODEL_TARGET_SIZE = {
   car:      3.2,
-  motorbike: 2.8,
+  motorbike: 3.4,  // sportbike is longer end-to-end, scale up slightly
   helmet:   1.5,
   sphere:   2.2,
 };
@@ -2048,7 +2048,7 @@ const MODEL_SOURCES = {
   // rawScale = pre-scale correction BEFORE auto-fit (e.g. motorbike is in mm units, needs 0.012 first)
   // All models then auto-fit to MODEL_TARGET_SIZE after rawScale is applied.
   car:       { path:'./models/ferrari.glb',    credit:'Ferrari (three.js examples, MIT)',          rawScale:1,     offsetY:0.05 },
-  motorbike: { path:'./models/motorbike_new.glb', credit:'Sport Motorcycle (custom)',               rawScale:1,     offsetY:0 },
+  motorbike: { path:'./models/sportbike.glb',     credit:'Sport Superbike (PaintMixer v4.1)',        rawScale:1,     offsetY:-0.05 },
   helmet:    { path:'./models/helmet.glb',     credit:'Damaged Helmet (CC0, Khronos)',             rawScale:1,     offsetY:0.05 },
   sphere:    { path:null,                       credit:'',                                          rawScale:1,     offsetY:0 },
 };
@@ -2252,6 +2252,7 @@ function buildModel(type) {
   // Remove previous model and cancel any pending load
   if(threeMesh) { threeScene.remove(threeMesh); threeMesh=null; }
   threeMat=null;
+  _liveTexture=null; _liveNormalMap=null; // reset live textures — render loop will rebuild
   hideModelLoading(); // always clear any lingering overlay immediately
   const token = ++_gltfLoadToken; // snapshot for this load; stale callbacks will be ignored
 
@@ -2572,10 +2573,109 @@ function setEnvironment(env) {
   if(threeRenderer) threeRenderer.toneMappingExposure=cfg.exposure;
 }
 
+// ── Live texture animation helpers ──────────────────────────────────────────
+// Canvas texture that is updated every frame for animated effects
+let _liveTexture = null;
+let _liveNormalMap = null;
+let _liveNormCanvas = null;
+const _NORM_SIZE = 512; // normal map resolution (cheaper than 2048)
+
+/** Derive a normal map from the luminance of a source canvas.
+ *  Bright pixels = higher surface = normals tilt outward. */
+function _buildNormalMapFromCanvas(srcCanvas) {
+  if (!_liveNormCanvas) {
+    _liveNormCanvas = document.createElement('canvas');
+    _liveNormCanvas.width = _liveNormCanvas.height = _NORM_SIZE;
+  }
+  const nc = _liveNormCanvas;
+  const nCtx = nc.getContext('2d');
+  // Downscale source into normal-map canvas
+  nCtx.drawImage(srcCanvas, 0, 0, _NORM_SIZE, _NORM_SIZE);
+  const imgData = nCtx.getImageData(0, 0, _NORM_SIZE, _NORM_SIZE);
+  const d = imgData.data;
+  const out = new Uint8ClampedArray(d.length);
+  const w = _NORM_SIZE;
+  // Sobel-based height-to-normal conversion
+  for (let y = 0; y < w; y++) {
+    for (let x = 0; x < w; x++) {
+      const lum = (px,py) => {
+        const ci=(Math.max(0,Math.min(w-1,py))*w+Math.max(0,Math.min(w-1,px)))*4;
+        return (d[ci]*0.299+d[ci+1]*0.587+d[ci+2]*0.114)/255;
+      };
+      const tl=lum(x-1,y-1),t=lum(x,y-1),tr=lum(x+1,y-1);
+      const l =lum(x-1,y),              r=lum(x+1,y);
+      const bl=lum(x-1,y+1),b=lum(x,y+1),br=lum(x+1,y+1);
+      // Sobel
+      const dX=(tr+2*r+br)-(tl+2*l+bl);
+      const dY=(bl+2*b+br)-(tl+2*t+tr);
+      const strength = 2.5; // normal map contrast
+      const nx=dX*strength, ny=dY*strength, nz=1.0;
+      const len=Math.sqrt(nx*nx+ny*ny+nz*nz)||1;
+      const oi=(y*w+x)*4;
+      out[oi]   = ((nx/len)*0.5+0.5)*255;
+      out[oi+1] = ((ny/len)*0.5+0.5)*255;
+      out[oi+2] = ((nz/len)*0.5+0.5)*255;
+      out[oi+3] = 255;
+    }
+  }
+  nCtx.putImageData(new ImageData(out, w, w), 0, 0);
+  return nc;
+}
+
+/** Per-effect normal map strength override */
+const EFFECT_NORMAL_STRENGTH = {
+  kristall:0.9, impasto:0.95, hammered:0.80, marble:0.65, granite:0.70,
+  crackle:0.85, rust:0.75, wood:0.60, leather:0.55, concrete:0.60,
+  watercolor:0.35, sand:0.50, fabric:0.45, mica:0.40, opal:0.50,
+  pearl:0.30, metallic:0.25, chrome:0.10, brushed_gold:0.35, glitter:0.55,
+  galaxy:0.20, neon_glow:0.15, holographic:0.20, chameleon:0.25,
+};
+
 function startThreeLoop() {
   function loop() {
     requestAnimationFrame(loop);
     if(!threeRenderer||!threeScene||!threeCamera) return;
+
+    // ── Live effect texture update ──
+    const isAnimated = state.activeEffect && ANIMATED_EFFECTS.has(state.activeEffect.id);
+    if (threeMat && (isAnimated || !_liveTexture)) {
+      // Rebuild paint canvas this frame
+      const paintCanvas = buildPaintTexture();
+
+      // Update or create diffuse texture
+      if (!_liveTexture) {
+        _liveTexture = new THREE.CanvasTexture(paintCanvas);
+        _liveTexture.wrapS = _liveTexture.wrapT = THREE.RepeatWrapping;
+        threeMat.map = _liveTexture;
+      } else {
+        _liveTexture.image = paintCanvas;
+        _liveTexture.needsUpdate = true;
+      }
+      // Texture repeat based on model
+      const rpt = currentModel === 'sphere' ? 1 : 2;
+      _liveTexture.repeat.set(rpt, rpt);
+
+      // ── Derive normal map from canvas luminance ──
+      const effectId = state.activeEffect?.id || 'none';
+      const normStr = EFFECT_NORMAL_STRENGTH[effectId] ?? 0;
+      if (normStr > 0.05) {
+        const normCanvas = _buildNormalMapFromCanvas(paintCanvas);
+        if (!_liveNormalMap) {
+          _liveNormalMap = new THREE.CanvasTexture(normCanvas);
+          _liveNormalMap.wrapS = _liveNormalMap.wrapT = THREE.RepeatWrapping;
+        } else {
+          _liveNormalMap.image = normCanvas;
+          _liveNormalMap.needsUpdate = true;
+        }
+        _liveNormalMap.repeat.set(rpt, rpt);
+        threeMat.normalMap = _liveNormalMap;
+        threeMat.normalScale = new THREE.Vector2(normStr, normStr);
+      } else {
+        threeMat.normalMap = null;
+      }
+      threeMat.needsUpdate = true;
+    }
+
     const angle3d=((document.getElementById('3d-light-angle')?.value||45)*Math.PI)/180;
     const height3d=(document.getElementById('3d-light-height')?.value||70)/100*6;
     if(threePointLight) threePointLight.position.set(Math.cos(angle3d)*5,height3d,Math.sin(angle3d)*5);
@@ -2592,11 +2692,10 @@ function startThreeLoop() {
 
 function update3DFromState() {
   if(!threeInitialized||!threeMat) return;
-  const texture=new THREE.CanvasTexture(buildPaintTexture());
-  texture.wrapS=THREE.RepeatWrapping; texture.wrapT=THREE.RepeatWrapping;
-  texture.repeat.set(currentModel==='sphere'?1:2,currentModel==='sphere'?1:2);
+  // Reset live texture so render loop rebuilds it this frame
+  _liveTexture = null;
+  _liveNormalMap = null;
   const mp=getEffect3DMat();
-  threeMat.map=texture;
   threeMat.roughness=mp.roughness;
   threeMat.metalness=mp.metalness;
   threeMat.clearcoat=mp.clearcoat;
