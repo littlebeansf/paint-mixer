@@ -2259,7 +2259,7 @@ const EFFECT_3D_MATS = {
   'metallic':       { roughness:0.08, metalness:0.98, clearcoat:0.5, clearcoatRoughness:0.04, envMapIntensity:2.0 },
   'hammered':       { roughness:0.55, metalness:0.80, clearcoat:0.1, clearcoatRoughness:0.3,  envMapIntensity:1.2 },
   'chrome':         { roughness:0.02, metalness:1.00, clearcoat:1.0, clearcoatRoughness:0.01, envMapIntensity:3.0 },
-  'brushed-gold':   { roughness:0.18, metalness:0.95, clearcoat:0.3, clearcoatRoughness:0.1,  envMapIntensity:1.8 },
+  'brushed_gold':   { roughness:0.18, metalness:0.95, clearcoat:0.3, clearcoatRoughness:0.1,  envMapIntensity:1.8 },
   'kristall':       { roughness:0.04, metalness:0.12, clearcoat:1.0, clearcoatRoughness:0.01, envMapIntensity:2.5 },
   'pearl':          { roughness:0.20, metalness:0.08, clearcoat:0.9, clearcoatRoughness:0.04, envMapIntensity:1.8 },
   'mica':           { roughness:0.28, metalness:0.45, clearcoat:0.6, clearcoatRoughness:0.08, envMapIntensity:1.5 },
@@ -2277,7 +2277,7 @@ const EFFECT_3D_MATS = {
   'leather':        { roughness:0.80, metalness:0.00, clearcoat:0.1, clearcoatRoughness:0.5,  envMapIntensity:0.4 },
   'glitter':        { roughness:0.05, metalness:0.85, clearcoat:1.0, clearcoatRoughness:0.01, envMapIntensity:3.0 },
   'galaxy':         { roughness:0.08, metalness:0.60, clearcoat:0.8, clearcoatRoughness:0.04, envMapIntensity:2.5 },
-  'neon-glow':      { roughness:0.20, metalness:0.00, clearcoat:0.6, clearcoatRoughness:0.1,  envMapIntensity:1.0 },
+  'neon_glow':      { roughness:0.20, metalness:0.00, clearcoat:0.6, clearcoatRoughness:0.1,  envMapIntensity:1.0 },
   'holographic':    { roughness:0.06, metalness:0.15, clearcoat:1.0, clearcoatRoughness:0.02, envMapIntensity:2.8 },
   'chameleon':      { roughness:0.10, metalness:0.10, clearcoat:0.95,clearcoatRoughness:0.03, envMapIntensity:2.5 },
   'watercolor':     { roughness:0.60, metalness:0.00, clearcoat:0.1, clearcoatRoughness:0.6,  envMapIntensity:0.4 },
@@ -2698,18 +2698,38 @@ function _buildProceduralHelmet(mat) {
 
 function setEnvironment(env) {
   currentEnv=env;
-  if(!threeScene) return;
+  if(!threeScene||!threeRenderer) return;
   const envs={
-    studio:   {bg:0x1a1a1a,ambient:0.6,light:2.2,exposure:1.2},
-    outdoor:  {bg:0x87ceeb,ambient:1.0,light:1.8,exposure:1.1},
-    showroom: {bg:0x0d0d0d,ambient:0.35,light:2.8,exposure:1.3},
-    night:    {bg:0x020408,ambient:0.18,light:1.4,exposure:1.8},
+    studio:   {bg:0x1a1a1a,ambient:0.6, light:2.2,exposure:1.2, envCol:[0.12,0.12,0.15]},
+    outdoor:  {bg:0x87ceeb,ambient:1.0, light:1.8,exposure:1.1, envCol:[0.53,0.81,0.92]},
+    showroom: {bg:0x0d0d0d,ambient:0.35,light:2.8,exposure:1.3, envCol:[0.05,0.05,0.05]},
+    night:    {bg:0x020408,ambient:0.18,light:1.4,exposure:1.8, envCol:[0.01,0.02,0.03]},
   };
   const cfg=envs[env]||envs.studio;
   threeScene.background=new THREE.Color(cfg.bg);
   if(threeEnvLight) threeEnvLight.intensity=cfg.ambient;
   if(threePointLight) threePointLight.intensity=cfg.light;
   if(threeRenderer) threeRenderer.toneMappingExposure=cfg.exposure;
+  // Build a procedural env map so metallic/shiny objects reflect something meaningful
+  try {
+    const pmrem = new THREE.PMREMGenerator(threeRenderer);
+    pmrem.compileEquirectangularShader();
+    // Build a tiny equirectangular gradient texture for the env
+    const [r,g,b] = cfg.envCol;
+    const eqW=64, eqH=32;
+    const eqCanvas=document.createElement('canvas'); eqCanvas.width=eqW; eqCanvas.height=eqH;
+    const eqCtx=eqCanvas.getContext('2d');
+    const grad=eqCtx.createLinearGradient(0,0,0,eqH);
+    grad.addColorStop(0, `rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`);
+    grad.addColorStop(0.5, `rgb(${Math.round(r*180)},${Math.round(g*180)},${Math.round(b*180)})`);
+    grad.addColorStop(1, `rgb(20,20,20)`);
+    eqCtx.fillStyle=grad; eqCtx.fillRect(0,0,eqW,eqH);
+    const eqTex=new THREE.CanvasTexture(eqCanvas);
+    eqTex.mapping=THREE.EquirectangularReflectionMapping;
+    const envTex=pmrem.fromEquirectangular(eqTex).texture;
+    threeScene.environment=envTex;
+    eqTex.dispose(); pmrem.dispose();
+  } catch(e) { /* non-fatal — falls back to ambient only */ }
 }
 
 // ── Live texture animation helpers ──────────────────────────────────────────
@@ -2858,9 +2878,9 @@ function testPaletteIn3D(item) {
       state.effectParams=item.effectParams?{...item.effectParams}:{};
       eff.params.forEach(p=>{ if(!(p.id in state.effectParams)) state.effectParams[p.id]=p.default; });
       buildEffectParams(eff);
-      // Mark effect card as selected
-      document.querySelectorAll('.effect-card').forEach(c=>c.classList.remove('selected'));
-      document.querySelector(`.effect-card[data-effect-id="${eff.id}"]`)?.classList.add('selected');
+      // Mark effect chip as selected
+      document.querySelectorAll('.effect-chip').forEach(c=>c.classList.remove('selected'));
+      document.querySelector(`.effect-chip[data-effect-id="${eff.id}"]`)?.classList.add('selected');
     }
   }
   // Navigate to 3D tab
